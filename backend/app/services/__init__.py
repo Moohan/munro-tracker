@@ -1,0 +1,33 @@
+from app.services.strava import (
+    REQUESTED_STRAVA_SCOPES,
+    REQUIRED_STRAVA_SCOPES,
+    build_authenticated_client,
+    build_authorization_url,
+    create_oauth_state,
+    ensure_fresh_access_token,
+    ensure_required_scopes,
+    exchange_code_for_token,
+    extract_activity_polyline,
+    get_strava_redirect_uri,
+    parse_oauth_state,
+    parse_scope_string,
+    upsert_user_from_auth,
+    validate_frontend_redirect_url,
+)
+
+__all__ = [
+    "REQUESTED_STRAVA_SCOPES",
+    "REQUIRED_STRAVA_SCOPES",
+    "build_authenticated_client",
+    "build_authorization_url",
+    "create_oauth_state",
+    "ensure_fresh_access_token",
+    "ensure_required_scopes",
+    "exchange_code_for_token",
+    "extract_activity_polyline",
+    "get_strava_redirect_uri",
+    "parse_oauth_state",
+    "parse_scope_string",
+    "upsert_user_from_auth",
+    "validate_frontend_redirect_url",
+]
