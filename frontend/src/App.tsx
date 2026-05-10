@@ -1,326 +1,255 @@
-import { useEffect, useState } from "react";
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import React, { useState, useEffect, useMemo } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-// Fix for default markers in react-leaflet
-delete (L.Icon.Default.prototype as any)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
-});
+// --- Constants ---
+const OSM_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+const TOPO_URL = 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png'; // Backup for "OS Map" look
+const API_BASE_URL = '/api/v1';
+const USER_ID = '00000000-0000-0000-0000-000000000001';
 
-type Munro = {
+// --- Types ---
+interface Munro {
   id: number;
   name: string;
   height_metres: number;
   latitude: number;
   longitude: number;
-  bagged?: boolean; // For now, we'll simulate this
+  is_bagged: boolean;
+}
+
+// --- Components ---
+
+const SetMapBounds = ({ munros }: { munros: Munro[] }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (munros.length > 0) {
+      const bounds = L.latLngBounds(munros.map(m => [m.latitude, m.longitude]));
+      map.fitBounds(bounds, { padding: [50, 50] });
+    }
+  }, [munros, map]);
+  return null;
 };
 
-type MapTileType = 'osm' | 'os';
+const MapController = ({ targetMunro }: { targetMunro: Munro | null }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (targetMunro) {
+      map.setView([targetMunro.latitude, targetMunro.longitude], 12, { animate: true });
+    }
+  }, [targetMunro, map]);
+  return null;
+};
 
-const OS_MAP_URL = 'https://api.os.uk/maps/raster/v1/zxy/Light_3857/{z}/{x}/{y}.png?key=YOUR_OS_API_KEY';
-const OSM_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+const createPeakIcon = (isBagged: boolean) => {
+  const color = isBagged ? '#22c55e' : '#ef4444';
+  return L.divIcon({
+    html: `
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 4L4 18H20L12 4Z" fill="${color}" stroke="white" stroke-width="2" stroke-linejoin="round"/>
+      </svg>
+    `,
+    className: 'custom-peak-icon',
+    iconSize: [24, 24],
+    iconAnchor: [12, 24],
+    popupAnchor: [0, -20],
+  });
+};
 
-export default function App() {
+const App: React.FC = () => {
   const [munros, setMunros] = useState<Munro[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [mapTileType, setMapTileType] = useState<MapTileType>('osm');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [mapType, setMapType] = useState<'osm' | 'topo'>('osm');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filter, setFilter] = useState<'all' | 'bagged' | 'remaining'>('all');
+  const [sortBy, setSortBy] = useState<'height' | 'alphabetical'>('height');
   const [selectedMunro, setSelectedMunro] = useState<Munro | null>(null);
 
   useEffect(() => {
-    const controller = new AbortController();
-
-    fetch(`${import.meta.env.VITE_API_BASE_URL || "/api/v1"}/munros?limit=300`, {
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`API returned ${response.status}`);
-        }
-        return response.json() as Promise<Munro[]>;
-      })
-      .then((data) => {
-        // Simulate bagging status for demo - in real app this would come from user data
-        const munrosWithBagging = data.map((munro, index) => ({
-          ...munro,
-          bagged: index % 3 === 0 // Every 3rd Munro is "bagged" for demo
-        }));
-        setMunros(munrosWithBagging);
+    const fetchMunros = async () => {
+      try {
+        setLoading(true);
+        const response = await fetch(`${API_BASE_URL}/munros?user_id=${USER_ID}&limit=300`);
+        if (!response.ok) throw new Error('Failed to fetch Munros');
+        const data = await response.json();
+        setMunros(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      } finally {
         setLoading(false);
-        setError(null);
-      })
-      .catch((fetchError: unknown) => {
-        if (fetchError instanceof Error && fetchError.name !== "AbortError") {
-          setError(fetchError.message);
-          setLoading(false);
-        }
-      });
-
-    return () => controller.abort();
+      }
+    };
+    fetchMunros();
   }, []);
 
-  const createMarkerIcon = (bagged: boolean) => {
-    return L.divIcon({
-      className: 'custom-munro-marker',
-      html: `<div style="
-        width: 20px;
-        height: 20px;
-        background-color: ${bagged ? '#22c55e' : '#ef4444'};
-        border: 2px solid white;
-        border-radius: 50%;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 12px;
-        color: white;
-        font-weight: bold;
-      ">▲</div>`,
-      iconSize: [20, 20],
-      iconAnchor: [10, 10],
-    });
-  };
+  const stats = useMemo(() => {
+    const total = munros.length;
+    const bagged = munros.filter(m => m.is_bagged).length;
+    const percentage = total > 0 ? ((bagged / total) * 100).toFixed(1) : '0.0';
+    const totalBaggedHeight = munros.filter(m => m.is_bagged).reduce((acc, m) => acc + m.height_metres, 0);
+    return { total, bagged, percentage, totalBaggedHeight };
+  }, [munros]);
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-mist via-white to-heather flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-pine mx-auto mb-4"></div>
-          <p className="text-peat">Loading Munros...</p>
-        </div>
-      </div>
-    );
-  }
+  const filteredMunros = useMemo(() => {
+    return munros
+      .filter(m => {
+        const matchesSearch = m.name.toLowerCase().includes(searchQuery.toLowerCase());
+        const matchesFilter =
+          filter === 'all' ||
+          (filter === 'bagged' && m.is_bagged) ||
+          (filter === 'remaining' && !m.is_bagged);
+        return matchesSearch && matchesFilter;
+      })
+      .sort((a, b) => {
+        if (sortBy === 'height') return b.height_metres - a.height_metres;
+        return a.name.localeCompare(b.name);
+      });
+  }, [munros, searchQuery, filter, sortBy]);
 
-  if (error) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-mist via-white to-heather flex items-center justify-center">
-        <div className="text-center max-w-md mx-auto p-6">
-          <p className="text-ember mb-4">Failed to load Munros</p>
-          <p className="text-heather">{error}</p>
-        </div>
+  if (loading) return (
+    <div className="flex h-screen items-center justify-center bg-slate-50">
+      <div className="text-center">
+        <div className="h-12 w-12 animate-spin rounded-full border-4 border-emerald-700 border-t-transparent mx-auto mb-4"></div>
+        <p className="text-emerald-900 font-medium">Loading Highlands...</p>
       </div>
-    );
-  }
+    </div>
+  );
+
+  if (error) return (
+    <div className="flex h-screen items-center justify-center bg-slate-50 p-6">
+      <div className="max-w-md rounded-2xl bg-white p-8 shadow-xl text-center">
+        <h2 className="text-rose-600 text-2xl font-bold mb-2">Error</h2>
+        <p className="text-slate-600 mb-6">{error}</p>
+        <button onClick={() => window.location.reload()} className="rounded-xl bg-emerald-700 px-6 py-2 text-white font-medium hover:bg-emerald-800 transition-colors">Retry</button>
+      </div>
+    </div>
+  );
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-mist via-white to-heather">
-      <div className="flex h-screen">
-        {/* Sidebar */}
-        <div className="w-full md:w-80 bg-white/90 backdrop-blur shadow-ridge overflow-y-auto">
-          <div className="p-6 border-b border-pine/10">
-            <h1 className="text-2xl font-display font-bold text-peat mb-2">Munro Tracker</h1>
-            <p className="text-heather text-sm">Track your Scottish Munro bagging progress</p>
-          </div>
+    <div className="relative flex h-screen w-screen overflow-hidden bg-slate-50 text-slate-900 font-sans">
+      {/* Mobile Overlay */}
+      {isSidebarOpen && (
+        <div className="fixed inset-0 z-[1001] bg-slate-900/40 backdrop-blur-sm lg:hidden" onClick={() => setIsSidebarOpen(false)} />
+      )}
 
-          {/* Map Type Toggle */}
-          <div className="p-4 border-b border-pine/10">
-            <div className="flex gap-2">
-              <button
-                onClick={() => setMapTileType('osm')}
-                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
-                  mapTileType === 'osm'
-                    ? 'bg-pine text-white'
-                    : 'bg-mist text-peat hover:bg-heather/20'
-                }`}
-              >
-                OpenStreetMap
-              </button>
-              <button
-                onClick={() => setMapTileType('os')}
-                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${
-                  mapTileType === 'os'
-                    ? 'bg-pine text-white'
-                    : 'bg-mist text-peat hover:bg-heather/20'
-                }`}
-              >
-                OS Map
+      {/* Sidebar */}
+      <aside className={`fixed inset-y-0 left-0 z-[1002] w-80 transform bg-white p-6 shadow-2xl transition-transform duration-300 ease-in-out lg:static lg:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="flex flex-col h-full">
+          <div className="mb-8">
+            <div className="flex items-center justify-between mb-4">
+              <h1 className="text-2xl font-black tracking-tight text-emerald-900">MunroStream</h1>
+              <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-slate-600">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
               </button>
             </div>
-          </div>
 
-          {/* Munro List */}
-          <div className="p-4">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-peat">Munros</h2>
-              <div className="flex gap-4 text-sm">
-                <div className="flex items-center gap-1">
-                  <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-                  <span className="text-heather">Bagged</span>
+            <div className="rounded-2xl bg-emerald-50 p-4 border border-emerald-100">
+              <div className="flex justify-between items-end mb-2">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-emerald-700 opacity-70">Progress</p>
+                  <p className="text-2xl font-black text-emerald-900">{stats.bagged} / {stats.total}</p>
                 </div>
-                <div className="flex items-center gap-1">
-                  <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-                  <span className="text-heather">Remaining</span>
+                <div className="text-right">
+                  <p className="text-xs font-bold uppercase tracking-wider text-emerald-700 opacity-70">Total Ascent</p>
+                  <p className="text-sm font-bold text-emerald-900">{stats.totalBaggedHeight.toLocaleString()}m</p>
                 </div>
               </div>
+              <div className="h-2 w-full rounded-full bg-emerald-200 overflow-hidden">
+                <div className="h-full bg-emerald-600 transition-all duration-1000" style={{ width: `${stats.percentage}%` }} />
+              </div>
+              <p className="mt-2 text-right text-xs font-bold text-emerald-700">{stats.percentage}% Complete</p>
+            </div>
+          </div>
+
+          <div className="space-y-4 mb-6">
+            <div className="relative">
+              <input
+                type="text" placeholder="Search Munros..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full rounded-xl border-none bg-slate-100 px-4 py-2.5 pl-10 text-sm focus:ring-2 focus:ring-emerald-500/20"
+              />
+              <svg className="absolute left-3 top-3 text-slate-400" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
             </div>
 
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {munros.map((munro) => (
-                <div
-                  key={munro.id}
-                  onClick={() => setSelectedMunro(munro)}
-                  className={`p-3 rounded-lg cursor-pointer transition-colors ${
-                    selectedMunro?.id === munro.id
-                      ? 'bg-pine/10 border border-pine/20'
-                      : 'hover:bg-mist/50'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
-                      <h3 className="font-medium text-peat text-sm">{munro.name}</h3>
-                      <p className="text-heather text-xs">{munro.height_metres}m</p>
-                    </div>
-                    <div className={`w-4 h-4 rounded-full ${munro.bagged ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                  </div>
-                </div>
+            <div className="grid grid-cols-3 gap-2">
+              {(['all', 'bagged', 'remaining'] as const).map(f => (
+                <button key={f} onClick={() => setFilter(f)} className={`rounded-lg py-1.5 text-xs font-bold capitalize transition-all ${filter === f ? 'bg-emerald-800 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+                  {f}
+                </button>
               ))}
             </div>
-          </div>
-        </div>
 
-        {/* Map */}
-        <div className="flex-1 relative">
-          <MapContainer
-            center={[56.8169, -4.1826]} // Center of Scotland
-            zoom={7}
-            style={{ height: '100%', width: '100%' }}
-            className="z-0"
-          >
-            <TileLayer
-              url={mapTileType === 'os' ? OS_MAP_URL : OSM_URL}
-              attribution={mapTileType === 'os'
-                ? '&copy; <a href="https://www.ordnancesurvey.co.uk/">Ordnance Survey</a>'
-                : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-              }
-            />
-            {munros.map((munro) => (
-              <Marker
-                key={munro.id}
-                position={[munro.latitude, munro.longitude]}
-                icon={createMarkerIcon(munro.bagged || false)}
-                eventHandlers={{
-                  click: () => setSelectedMunro(munro),
-                }}
+            <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-slate-400 px-1">
+              <span>Sort by</span>
+              <div className="flex gap-3">
+                <button onClick={() => setSortBy('height')} className={`hover:text-emerald-700 ${sortBy === 'height' ? 'text-emerald-700' : ''}`}>Height</button>
+                <button onClick={() => setSortBy('alphabetical')} className={`hover:text-emerald-700 ${sortBy === 'alphabetical' ? 'text-emerald-700' : ''}`}>A-Z</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto -mx-2 px-2 space-y-2 custom-scrollbar">
+            {filteredMunros.map(m => (
+              <button
+                key={m.id} onClick={() => { setSelectedMunro(m); if(window.innerWidth < 1024) setIsSidebarOpen(false); }}
+                className="w-full text-left group flex items-center justify-between rounded-xl border border-transparent bg-white p-3 hover:bg-slate-50 hover:border-slate-200 transition-all shadow-sm"
               >
-                <Popup>
-                  <div className="text-center">
-                    <h3 className="font-semibold text-peat">{munro.name}</h3>
-                    <p className="text-heather text-sm">{munro.height_metres}m</p>
-                    <p className={`text-xs font-medium ${munro.bagged ? 'text-green-600' : 'text-red-600'}`}>
-                      {munro.bagged ? 'Bagged ✓' : 'Remaining'}
-                    </p>
-                  </div>
-                </Popup>
-              </Marker>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 group-hover:text-emerald-900 transition-colors">{m.name}</h3>
+                  <p className="text-xs font-medium text-slate-400">{m.height_metres}m</p>
+                </div>
+                <div className={`h-2 w-2 rounded-full ${m.is_bagged ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+              </button>
             ))}
-          </MapContainer>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-    return () => controller.abort();
-  }, []);
-
-  return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(178,197,114,0.28),_transparent_35%),linear-gradient(160deg,_#f7f4ee_0%,_#dce6e4_48%,_#c5d3cf_100%)] text-peat">
-      <section className="mx-auto flex min-h-screen max-w-6xl flex-col px-6 py-10 lg:px-10">
-        <div className="grid gap-8 lg:grid-cols-[1.35fr_0.95fr]">
-          <div className="space-y-6 rounded-[2rem] border border-white/60 bg-white/70 p-8 shadow-ridge backdrop-blur">
-            <p className="text-sm font-semibold uppercase tracking-[0.32em] text-pine">
-              MunroStream local environment
-            </p>
-            <div className="space-y-4">
-              <h1 className="font-display text-5xl leading-tight text-peat sm:text-6xl">
-                Build a reliable Munro bagging platform before adding product polish.
-              </h1>
-              <p className="max-w-2xl text-lg leading-8 text-heather">
-                This starter stack pairs a stateless FastAPI service with PostGIS, Redis, Celery,
-                and a Vite client. Every summit decision is designed around metric distances,
-                refresh-token-safe OAuth, and DoBIH-backed Munro data integrity.
-              </p>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-3">
-              <StatCard label="Summit threshold" value="100 m" />
-              <StatCard label="Coordinate SRID" value="4326" />
-              <StatCard label="Distance units" value="Kilometres" />
-            </div>
+            {filteredMunros.length === 0 && <p className="text-center text-sm text-slate-400 py-8">No matching peaks.</p>}
           </div>
+        </div>
+      </aside>
 
-          <aside className="rounded-[2rem] border border-pine/15 bg-peat p-8 text-mist shadow-ridge">
-            <p className="text-sm font-semibold uppercase tracking-[0.32em] text-lichen">
-              Service health
-            </p>
-            <div className="mt-6 space-y-4">
-              <HealthRow label="API" value={health?.status ?? "Waiting"} tone={health ? "ok" : "idle"} />
-              <HealthRow label="Database" value={health?.database ?? "Unknown"} tone={health?.database === "ok" ? "ok" : "idle"} />
-              <HealthRow label="Redis" value={health?.redis ?? "Unknown"} tone={health?.redis === "ok" ? "ok" : "idle"} />
-              <p className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm leading-6 text-granite">
-                {error
-                  ? `The API health endpoint is not available yet: ${error}.`
-                  : health?.postgis
-                    ? `PostGIS reports: ${health.postgis}`
-                    : "Start the compose stack to verify FastAPI, PostgreSQL/PostGIS, and Redis together."}
-              </p>
-            </div>
-          </aside>
+      {/* Main Content */}
+      <main className="relative flex-1">
+        <button onClick={() => setIsSidebarOpen(true)} className="absolute left-4 top-4 z-[1000] rounded-2xl bg-white p-3 shadow-xl lg:hidden hover:bg-slate-50">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        </button>
+
+        <div className="absolute right-4 top-4 z-[1000] flex rounded-2xl bg-white/90 backdrop-blur p-1 shadow-xl border border-white">
+          <button onClick={() => setMapType('osm')} className={`rounded-xl px-4 py-2 text-xs font-black transition-all ${mapType === 'osm' ? 'bg-emerald-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>OSM</button>
+          <button onClick={() => setMapType('topo')} className={`rounded-xl px-4 py-2 text-xs font-black transition-all ${mapType === 'topo' ? 'bg-emerald-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>OS Map</button>
         </div>
 
-        <section className="mt-8 grid gap-5 lg:grid-cols-3">
-          {milestones.map((milestone) => (
-            <article
-              key={milestone.title}
-              className="rounded-[1.75rem] border border-pine/10 bg-white/65 p-6 shadow-ridge backdrop-blur"
-            >
-              <p className="text-sm font-semibold uppercase tracking-[0.24em] text-ember">
-                {milestone.title}
-              </p>
-              <p className="mt-4 text-base leading-7 text-heather">{milestone.detail}</p>
-            </article>
+        <MapContainer center={[56.817, -4.183]} zoom={7} style={{ height: '100%', width: '100%' }} zoomControl={false}>
+          <TileLayer attribution="&copy; OpenStreetMap &copy; OpenTopoMap" url={mapType === 'osm' ? OSM_URL : TOPO_URL} />
+          <SetMapBounds munros={munros} />
+          <MapController targetMunro={selectedMunro} />
+          {munros.map(m => (
+            <Marker key={m.id} position={[m.latitude, m.longitude]} icon={createPeakIcon(m.is_bagged)}>
+              <Popup className="custom-popup">
+                <div className="p-1">
+                  <h3 className="text-base font-black text-emerald-900 mb-1">{m.name}</h3>
+                  <div className="flex items-center justify-between gap-4">
+                    <span className="text-sm font-bold text-slate-500">{m.height_metres}m</span>
+                    <span className={`text-[10px] font-black uppercase tracking-widest ${m.is_bagged ? 'text-emerald-600' : 'text-rose-600'}`}>
+                      {m.is_bagged ? 'Bagged ✓' : 'Remaining'}
+                    </span>
+                  </div>
+                </div>
+              </Popup>
+            </Marker>
           ))}
-        </section>
-      </section>
-    </main>
-  );
-}
+        </MapContainer>
+      </main>
 
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-[1.5rem] border border-pine/10 bg-pine/5 p-4">
-      <p className="text-sm uppercase tracking-[0.18em] text-heather">{label}</p>
-      <p className="mt-3 text-2xl font-semibold text-pine">{value}</p>
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+        .custom-popup .leaflet-popup-content-wrapper { border-radius: 1rem; padding: 0.5rem; border: none; box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1); }
+        .custom-popup .leaflet-popup-tip { background: white; }
+      `}</style>
     </div>
   );
-}
+};
 
-function HealthRow({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone: "ok" | "idle";
-}) {
-  return (
-    <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-      <span className="text-sm uppercase tracking-[0.24em] text-granite">{label}</span>
-      <span
-        className={
-          tone === "ok"
-            ? "rounded-full bg-lichen/20 px-3 py-1 text-sm font-semibold text-lichen"
-            : "rounded-full bg-white/10 px-3 py-1 text-sm font-semibold text-mist"
-        }
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
+export default App;
