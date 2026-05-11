@@ -6,8 +6,35 @@ import 'leaflet/dist/leaflet.css';
 // --- Constants ---
 const OSM_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 const TOPO_URL = 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png'; // Backup for "OS Map" look
-const API_BASE_URL = '/api/v1';
-const USER_ID = '00000000-0000-0000-0000-000000000001';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+const USER_ID = import.meta.env.VITE_USER_ID || '00000000-0000-0000-0000-000000000001';
+
+// --- Icons (Memoized Singletons) ---
+const baggedPeakIcon = L.divIcon({
+  html: `
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 4L4 18H20L12 4Z" fill="#22c55e" stroke="white" stroke-width="2" stroke-linejoin="round"/>
+    </svg>
+  `,
+  className: 'custom-peak-icon',
+  iconSize: [24, 24],
+  iconAnchor: [12, 24],
+  popupAnchor: [0, -20],
+});
+
+const remainingPeakIcon = L.divIcon({
+  html: `
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M12 4L4 18H20L12 4Z" fill="#ef4444" stroke="white" stroke-width="2" stroke-linejoin="round"/>
+    </svg>
+  `,
+  className: 'custom-peak-icon',
+  iconSize: [24, 24],
+  iconAnchor: [12, 24],
+  popupAnchor: [0, -20],
+});
+
+const getPeakIcon = (isBagged: boolean) => (isBagged ? baggedPeakIcon : remainingPeakIcon);
 
 // --- Types ---
 interface Munro {
@@ -40,21 +67,6 @@ const MapController = ({ targetMunro }: { targetMunro: Munro | null }) => {
     }
   }, [targetMunro, map]);
   return null;
-};
-
-const createPeakIcon = (isBagged: boolean) => {
-  const color = isBagged ? '#22c55e' : '#ef4444';
-  return L.divIcon({
-    html: `
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M12 4L4 18H20L12 4Z" fill="${color}" stroke="white" stroke-width="2" stroke-linejoin="round"/>
-      </svg>
-    `,
-    className: 'custom-peak-icon',
-    iconSize: [24, 24],
-    iconAnchor: [12, 24],
-    popupAnchor: [0, -20],
-  });
 };
 
 const App: React.FC = () => {
@@ -224,7 +236,7 @@ const App: React.FC = () => {
           <SetMapBounds munros={munros} />
           <MapController targetMunro={selectedMunro} />
           {munros.map(m => (
-            <Marker key={m.id} position={[m.latitude, m.longitude]} icon={createPeakIcon(m.is_bagged)}>
+            <Marker key={m.id} position={[m.latitude, m.longitude]} icon={getPeakIcon(m.is_bagged)}>
               <Popup className="custom-popup">
                 <div className="p-1">
                   <h3 className="text-base font-black text-emerald-900 mb-1">{m.name}</h3>
@@ -240,14 +252,6 @@ const App: React.FC = () => {
           ))}
         </MapContainer>
       </main>
-
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
-        .custom-popup .leaflet-popup-content-wrapper { border-radius: 1rem; padding: 0.5rem; border: none; box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1); }
-        .custom-popup .leaflet-popup-tip { background: white; }
-      `}</style>
     </div>
   );
 };

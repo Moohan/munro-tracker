@@ -12,6 +12,9 @@ router = APIRouter()
 
 @router.get("", response_model=list[MunroSummary])
 def list_munros(
+    # NOTE: In a production environment, user_id should be derived from the
+    # authenticated context (e.g., JWT) to prevent unauthorized access
+    # to other users' bagging data.
     user_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=300, ge=1, le=1000),
     db: Session = Depends(get_db),
