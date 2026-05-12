@@ -1,0 +1,15 @@
+
+> munrostream-frontend@0.1.0 dev
+> vite --port 5173 --host 0.0.0.0
+
+
+  VITE v5.4.21  ready in 856 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.0.2:5173/
+7:49:00 PM [vite] http proxy error: /api/v1/munros?user_id=00000000-0000-0000-0000-000000000001&limit=300
+Error: getaddrinfo ENOTFOUND api
+    at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:122:26)
+7:49:00 PM [vite] http proxy error: /api/v1/munros?user_id=00000000-0000-0000-0000-000000000001&limit=300
+Error: getaddrinfo ENOTFOUND api
+    at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:122:26)
