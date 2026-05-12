@@ -19,8 +19,11 @@ def _get_sessionmaker():
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
+def SessionLocal():
+    return _get_sessionmaker()()
+
+
 def get_db() -> Generator[Session, None, None]:
-    SessionLocal = _get_sessionmaker()
     db = SessionLocal()
     try:
         yield db
