@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.db.session import get_db
 
+DEMO_USER_ID = uuid.UUID('00000000-0000-0000-0000-000000000001')
+
 @pytest.fixture
 def override_db() -> MagicMock:
     """Provide a MagicMock DB and manage FastAPI dependency overrides."""
@@ -98,11 +100,17 @@ def test_list_munros_invalid_limit(client: TestClient) -> None:
     assert response.status_code == 422
 
 def test_list_munros_with_user_id(client: TestClient, override_db: MagicMock) -> None:
-    """Test list_munros with user_id parameter."""
-    user_id = uuid.uuid4()
+    """Test list_munros with valid demo user_id parameter."""
     mock_result = MagicMock()
     mock_result.all.return_value = []
     override_db.execute.return_value = mock_result
 
-    response = client.get(f"/api/v1/munros?user_id={user_id}")
+    response = client.get(f"/api/v1/munros?user_id={DEMO_USER_ID}")
     assert response.status_code == 200
+
+def test_list_munros_unauthorized_user(client: TestClient, override_db: MagicMock) -> None:
+    """Test list_munros returns 403 when requesting data for a non-demo user."""
+    other_user_id = uuid.uuid4()
+    response = client.get(f"/api/v1/munros?user_id={other_user_id}")
+    assert response.status_code == 403
+    assert "Access to private user data is restricted" in response.json()["detail"]

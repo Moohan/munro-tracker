@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, field_serializer
+from pydantic import BaseModel, ConfigDict
 from decimal import Decimal
 
 class MunroSummary(BaseModel):
@@ -10,7 +10,3 @@ class MunroSummary(BaseModel):
     latitude: float
     longitude: float
     is_bagged: bool = False
-
-    @field_serializer('height_metres')
-    def serialize_height(self, value: Decimal) -> float:
-        return float(value)

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -7,7 +7,9 @@ import 'leaflet/dist/leaflet.css';
 const OSM_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 const TOPO_URL = 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png'; // Backup for "OS Map" look
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
-const USER_ID = import.meta.env.VITE_USER_ID || undefined;
+// Demo User ID used for presentation/preview
+const DEMO_USER_ID = '00000000-0000-0000-0000-000000000001';
+const USER_ID = import.meta.env.VITE_USER_ID || DEMO_USER_ID;
 
 // --- Icons (Memoized Singletons) ---
 const baggedPeakIcon = L.divIcon({
@@ -48,12 +50,19 @@ interface Munro {
 
 // --- Components ---
 
+/**
+ * Custom component to handle map bounds automatically
+ * Optimized to only fit bounds when the munro list length changes
+ */
 const SetMapBounds = ({ munros }: { munros: Munro[] }) => {
   const map = useMap();
+  const prevCountRef = useRef(0);
+
   useEffect(() => {
-    if (munros.length > 0) {
+    if (munros.length > 0 && munros.length !== prevCountRef.current) {
       const bounds = L.latLngBounds(munros.map(m => [m.latitude, m.longitude]));
       map.fitBounds(bounds, { padding: [50, 50] });
+      prevCountRef.current = munros.length;
     }
   }, [munros, map]);
   return null;
@@ -84,13 +93,11 @@ const App: React.FC = () => {
     const fetchMunros = async () => {
       try {
         setLoading(true);
-        const url = new URL(`${API_BASE_URL}/munros`, window.location.origin);
-        if (USER_ID) {
-          url.searchParams.append('user_id', USER_ID);
+        const response = await fetch(`${API_BASE_URL}/munros?user_id=${USER_ID}&limit=300`);
+        if (!response.ok) {
+           if (response.status === 403) throw new Error('Unauthorized Access: Demostration User Only');
+           throw new Error('Failed to fetch Munros');
         }
-        url.searchParams.append('limit', '300');
-        const response = await fetch(url.toString());
-        if (!response.ok) throw new Error('Failed to fetch Munros');
         const data = await response.json();
         setMunros(data);
       } catch (err) {
@@ -153,14 +160,19 @@ const App: React.FC = () => {
       )}
 
       {/* Sidebar */}
-      <aside id="sidebar" className={`fixed inset-y-0 left-0 z-[1002] w-80 transform bg-white p-6 shadow-2xl transition-transform duration-300 ease-in-out lg:static lg:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+      <aside className={`fixed inset-y-0 left-0 z-[1002] w-80 transform bg-white p-6 shadow-2xl transition-transform duration-300 ease-in-out lg:static lg:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="flex flex-col h-full">
           <div className="mb-8">
             <div className="flex items-center justify-between mb-4">
               <h1 className="text-2xl font-black tracking-tight text-emerald-900">MunroStream</h1>
-              <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-slate-600" aria-label="Close sidebar">
+              <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-slate-600">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
               </button>
+            </div>
+
+            <div className="mb-4 flex items-center gap-2 px-1">
+               <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></div>
+               <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Viewing Demo Profile</p>
             </div>
 
             <div className="rounded-2xl bg-emerald-50 p-4 border border-emerald-100">
@@ -227,7 +239,7 @@ const App: React.FC = () => {
 
       {/* Main Content */}
       <main className="relative flex-1">
-        <button onClick={() => setIsSidebarOpen(true)} className="absolute left-4 top-4 z-[1000] rounded-2xl bg-white p-3 shadow-xl lg:hidden hover:bg-slate-50" aria-label="Open menu" aria-expanded={isSidebarOpen} aria-controls="sidebar">
+        <button onClick={() => setIsSidebarOpen(true)} className="absolute left-4 top-4 z-[1000] rounded-2xl bg-white p-3 shadow-xl lg:hidden hover:bg-slate-50">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
         </button>
 
