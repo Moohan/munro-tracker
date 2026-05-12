@@ -2,35 +2,39 @@
 
 ## Summary
 
-The project specification is coherent and well-scoped for an incremental delivery, but several implementation details needed to be made explicit in the scaffold:
+The repo now implements the MVP architecture described in the original spec:
 
-- Spatial matching should use summit proximity rather than polygon containment for the first release, because the source dataset naturally provides summit coordinates.
-- The API should not decode polylines or run expensive spatial joins inline; those jobs belong in Celery workers.
-- OAuth persistence needs defensive schema constraints so Strava token refresh can be implemented without retrofitting storage guarantees later.
+- FastAPI remains a stateless orchestration layer
+- Celery + Redis own heavy Strava activity processing
+- PostGIS stores Munros, webhook receipts, and processed Strava activity evidence
+- React + Leaflet provide the bagging dashboard with optional OS Maps tiles
 
-## Recommended Baseline Architecture
+## Implemented flow
 
-- `frontend`: React + Vite with Tailwind CSS and API proxying during local development.
-- `api`: FastAPI serving stateless HTTP endpoints for auth, dashboard, and activity orchestration.
-- `worker`: Celery process for GPX/polyline decoding, elevation verification, and `ST_DWithin` summit matching.
-- `db`: PostgreSQL 16 + PostGIS storing users, Munros, and bag evidence.
-- `redis`: broker/result backend for asynchronous work.
+1. The frontend redirects the user to `/api/v1/strava/oauth/login`.
+2. The Strava callback exchanges the code, persists the refresh token, access token, and expiry timestamp, then queues a background sync.
+3. Strava webhooks are verified through `GET /api/v1/strava/webhook` and received through `POST /api/v1/strava/webhook`.
+4. Webhook payloads are stored in `strava_webhook_events` using an idempotent event key so duplicate deliveries do not re-enqueue duplicate work.
+5. The worker fetches detailed activity data, stores it in `strava_activities`, decodes the polyline, extracts a usable high point, and only bags a Munro when:
+   - the track comes within 100 metres of the summit using `ST_DWithin(...::geography, 100)`
+   - the activity high point is at least `munro.height_metres - 20`
+6. Dashboard stats are served from persisted `user_bags` and `strava_activities` data.
 
-## Data Design Notes
+## Data model notes
 
-- `munros.geom` is stored as `geometry(Point, 4326)` for source fidelity and PostGIS interoperability.
-- Distance-based queries should cast `geom` to geography to respect the 100 metre threshold accurately:
+- `munros.geom` remains `geometry(Point, 4326)`.
+- `strava_activities` stores per-user Strava activity metadata, elevation gain, high point, summary polyline, worker status, and errors.
+- `strava_webhook_events` stores raw webhook payloads, routing metadata, queue state, and an idempotency key.
+- `user_bags` still records the earliest bagging timestamp and best matched summit distance per user/Munro pair.
 
-```sql
-ST_DWithin(track.geom::geography, munros.geom::geography, 100)
-```
+## Frontend behaviour
 
-- `munros.is_munro_top` is retained as a guardrail column, but the schema rejects `true` values so accidental Munro Top ingestion fails loudly.
-- `user_bags` is modelled as a join table with evidence columns, allowing later expansion into manual review and reprocessing workflows.
+- The frontend stores the connected user ID in local browser storage rather than creating a server session.
+- Dashboard progress, ascent totals, and last-bag date come from the backend dashboard endpoint.
+- OS Maps tiles are used when `VITE_OS_MAPS_API_KEY` is configured; otherwise the UI falls back to OpenTopoMap and OpenStreetMap.
 
-## Immediate Next Steps
+## Remaining future work
 
-1. Add an ingestion command that loads DoBIH CSV rows, maps alternative names, and rejects Munro Tops before insert.
-2. Implement Strava OAuth callback and refresh token rotation with encrypted secret storage if production deployment is planned.
-3. Add an activities table plus webhook idempotency handling before turning on Strava subscriptions.
-4. Replace the worker stub with real polyline decoding, elevation verification, and bag upsert logic.
+- Activity heatmaps are still out of scope for this MVP pass.
+- There is not yet a manual review workflow for borderline activities or deleted Strava activities.
+- The schema still relies on bootstrap SQL rather than incremental migrations.

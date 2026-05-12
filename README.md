@@ -1,45 +1,87 @@
-# MunroStream Local Stack
+# MunroStream
 
-This repository now includes a container-first development skeleton for the MunroStream specification:
+MunroStream is a local-first MVP for Scottish hill bagging. It syncs Strava activities, processes summit matches asynchronously with Celery and Redis, stores Munro data in PostGIS, and presents bagging progress on a React + Leaflet dashboard.
 
-- PostgreSQL 16 with PostGIS for Munro storage and spatial querying
-- Redis for Celery broker/result backend
-- FastAPI for the stateless API surface
-- Celery worker stub for heavy Strava polyline and spatial analysis
-- React + Vite + Tailwind CSS for the client application
+## What is implemented
 
-## Architectural Review
+- DoBIH-backed Munro seeding with `Munro Top` rows excluded and alternative names preserved
+- Strava OAuth callback handling with refresh-token-safe persistence
+- Strava webhook verification and idempotent webhook event ingestion
+- Async activity processing that:
+  - decodes Strava polylines in the worker
+  - applies `ST_DWithin(...::geography, 100)` bagging checks against `geometry(Point, 4326)` summit data
+  - requires a recorded high point of at least `summit height - 20 metres`
+- Dashboard stats for total Munros, bagged Munros, completion percentage, total ascent, and last bag date
+- Leaflet frontend with real OS Maps support when configured, and OpenTopoMap/OpenStreetMap fallbacks when not
 
-The provided spec is strong on product intent and core technology choices, but it needed a few implementation-level decisions to become buildable:
+## Quick start
 
-- Bagging logic is normalised around `ST_DWithin` with a fixed `100` metre threshold, using `SRID 4326` geometries cast to geography for metric accuracy.
-- The API is kept stateless; polyline decoding and summit matching are reserved for a Celery worker backed by Redis.
-- OAuth persistence needs token safety constraints from day one. The schema therefore includes a `users` table with refresh token and expiry metadata, avoiding unsafe access-token-only storage.
-- DoBIH ingestion is expected to filter out `Munro Top` rows before persistence while still preserving `alternative_names` for matching and presentation.
-
-## Quick Start
-
-1. Copy `.env.example` to `.env` if you want to override defaults.
+1. Copy `.env.example` to `.env`.
 2. Start the stack:
 
 ```bash
 docker compose up --build
 ```
 
+The local stack now waits for a one-shot DoBIH seed step before the API starts, so the public Munro list is populated on first launch. If Strava OAuth is not configured locally, the app still loads and shows a disabled Strava control with a setup message.
+
 3. Open:
 
-- API docs: `http://localhost:8000/docs`
+- API docs: `http://localhost:18000/docs`
 - Frontend: `http://localhost:5173`
 
-## Layout
+## Environment
 
-- `infra/db/init/001_init.sql`: PostGIS extensions and initial schema
-- `backend/`: FastAPI and Celery skeleton
-- `frontend/`: Vite React skeleton with Tailwind setup
-- `docs/architecture-review.md`: implementation notes and next-phase recommendations
+Backend:
 
-## Notes
+- `STRAVA_CLIENT_ID`
+- `STRAVA_CLIENT_SECRET`
+- `STRAVA_REDIRECT_URI`
+- `STRAVA_WEBHOOK_VERIFY_TOKEN`
+- `STRAVA_WEBHOOK_SECRET`
 
-- Docker was not available in this execution environment, so the compose stack could not be started here.
-- The database initialisation script creates the required `munros` geometry table and `user_bags` join table.
-- The current worker task is intentionally a stub, but its SQL template already enforces the 100 m `ST_DWithin` rule for future bagging work.
+Frontend:
+
+- `VITE_OS_MAPS_API_KEY`
+- `VITE_OS_MAPS_TILE_URL_TEMPLATE`
+- `VITE_OS_MAPS_ATTRIBUTION`
+
+`STRAVA_WEBHOOK_VERIFY_TOKEN` is the canonical verification token. `STRAVA_WEBHOOK_SECRET` is still accepted as a fallback so older local setups do not break immediately.
+
+## Local commands
+
+Backend:
+
+```bash
+cd backend
+pip install -r requirements.txt
+python3 -m pytest -q
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm install
+npm test
+npm run build
+```
+
+DoBIH verification / seed:
+
+```bash
+python3 backend/scripts/seed_munros.py --verify-only
+python3 backend/scripts/seed_munros.py
+```
+
+## Architecture notes
+
+- All coordinates remain `SRID 4326`.
+- All metric distance checks cast to geography and use a hard `100` metre threshold.
+- The FastAPI layer stays stateless; expensive activity analysis runs only in Celery workers.
+- Dashboard totals use persisted activity records rather than client-side guesses.
+- UI copy uses British English and all displayed measurements are metric.
+
+## Known local setup note
+
+The schema is still bootstrapped from `infra/db/init/001_init.sql`. If you already have an older local Postgres volume, recreate it after pulling schema changes so the new Strava activity and webhook tables are created cleanly.

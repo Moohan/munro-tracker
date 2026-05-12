@@ -1,4 +1,5 @@
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -17,3 +18,9 @@ class StravaSyncQueuedResponse(BaseModel):
     user_id: uuid.UUID
     task_id: str
     activity_limit: int
+
+
+class StravaOAuthStatusResponse(BaseModel):
+    oauth_available: bool
+    reason: Literal["missing_client_id", "missing_client_secret"] | None = None
+    message: str

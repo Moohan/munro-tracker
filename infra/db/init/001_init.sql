@@ -51,8 +51,53 @@ CREATE TABLE IF NOT EXISTS user_bags (
 
 CREATE INDEX IF NOT EXISTS idx_user_bags_bagged_at ON user_bags (bagged_at DESC);
 
+CREATE TABLE IF NOT EXISTS strava_activities (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    strava_activity_id BIGINT NOT NULL,
+    name TEXT,
+    sport_type TEXT,
+    started_at TIMESTAMPTZ,
+    distance_metres NUMERIC(10, 2),
+    total_elevation_gain_metres NUMERIC(8, 2),
+    highest_point_metres NUMERIC(8, 2),
+    summary_polyline TEXT,
+    processing_status TEXT NOT NULL DEFAULT 'pending',
+    processing_error TEXT,
+    processed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, strava_activity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_strava_activities_status
+    ON strava_activities (processing_status, processed_at DESC);
+
+CREATE TABLE IF NOT EXISTS strava_webhook_events (
+    id BIGSERIAL PRIMARY KEY,
+    event_key TEXT NOT NULL UNIQUE,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    owner_id BIGINT NOT NULL,
+    object_id BIGINT NOT NULL,
+    object_type TEXT NOT NULL,
+    aspect_type TEXT NOT NULL,
+    event_time TIMESTAMPTZ NOT NULL,
+    subscription_id BIGINT,
+    updates JSONB NOT NULL DEFAULT '{}'::jsonb,
+    payload JSONB NOT NULL,
+    processing_status TEXT NOT NULL DEFAULT 'received',
+    enqueued_task_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 COMMENT ON COLUMN munros.geom IS
     'Summit coordinate stored as geometry(Point, 4326); cast to geography for metric ST_DWithin bagging checks.';
 
 COMMENT ON TABLE user_bags IS
     'Join table recording when a user has bagged a Munro, including spatial evidence from Strava activity processing.';
+
+COMMENT ON TABLE strava_activities IS
+    'Persisted Strava activity metadata and worker processing outcomes used for dashboard statistics and bagging evidence.';
+
+COMMENT ON TABLE strava_webhook_events IS
+    'Idempotent log of Strava webhook deliveries, used to avoid duplicate activity processing.';

@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     strava_oauth_state_ttl_seconds: int = 600
     strava_sync_activity_limit: int = 25
     strava_webhook_secret: str = "replace-me"
+    strava_webhook_verify_token: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",

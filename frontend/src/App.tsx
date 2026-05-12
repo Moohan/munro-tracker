@@ -1,22 +1,26 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
-import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
+import React, { useEffect, useMemo, useState } from "react";
+import { MapContainer, Marker, Popup, TileLayer, useMap } from "react-leaflet";
+import L from "leaflet";
 
-// --- Constants ---
-const OSM_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-const TOPO_URL = 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png'; // Backup for "OS Map" look
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
-const USER_ID = import.meta.env.VITE_USER_ID || undefined;
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api/v1";
+const CONNECTION_STORAGE_KEY = "munrostream.connected-user";
+const OSM_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+const TOPO_TILE_URL = "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png";
+const OS_TILE_URL_TEMPLATE =
+  import.meta.env.VITE_OS_MAPS_TILE_URL_TEMPLATE ||
+  "https://api.os.uk/maps/raster/v1/zxy/Outdoor_3857/{z}/{x}/{y}.png?key={key}";
+const OS_TILE_ATTRIBUTION =
+  import.meta.env.VITE_OS_MAPS_ATTRIBUTION ||
+  "Contains OS data &copy; Crown copyright and database rights";
+const OS_TILE_API_KEY = import.meta.env.VITE_OS_MAPS_API_KEY || "";
 
-// --- Icons (Memoized Singletons) ---
 const baggedPeakIcon = L.divIcon({
   html: `
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M12 4L4 18H20L12 4Z" fill="#22c55e" stroke="white" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M12 4L4 18H20L12 4Z" fill="#15803d" stroke="white" stroke-width="2" stroke-linejoin="round"/>
     </svg>
   `,
-  className: 'custom-peak-icon',
+  className: "custom-peak-icon",
   iconSize: [24, 24],
   iconAnchor: [12, 24],
   popupAnchor: [0, -20],
@@ -25,230 +29,714 @@ const baggedPeakIcon = L.divIcon({
 const remainingPeakIcon = L.divIcon({
   html: `
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M12 4L4 18H20L12 4Z" fill="#ef4444" stroke="white" stroke-width="2" stroke-linejoin="round"/>
+      <path d="M12 4L4 18H20L12 4Z" fill="#dc2626" stroke="white" stroke-width="2" stroke-linejoin="round"/>
     </svg>
   `,
-  className: 'custom-peak-icon',
+  className: "custom-peak-icon",
   iconSize: [24, 24],
   iconAnchor: [12, 24],
   popupAnchor: [0, -20],
 });
 
-const getPeakIcon = (isBagged: boolean) => (isBagged ? baggedPeakIcon : remainingPeakIcon);
+type BasemapMode = "os" | "topo" | "osm";
 
-// --- Types ---
-interface Munro {
+type Munro = {
   id: number;
   name: string;
   height_metres: number;
   latitude: number;
   longitude: number;
   is_bagged: boolean;
-}
+};
 
-// --- Components ---
+type DashboardSummary = {
+  total_munros: number;
+  bagged_munros: number;
+  completion_percentage: number;
+  total_ascent_metres: number;
+  last_bagged_at: string | null;
+};
+
+type StravaOAuthStatus = {
+  oauth_available: boolean;
+  reason: "missing_client_id" | "missing_client_secret" | null;
+  message: string;
+};
+
+type StoredConnection = {
+  userId: string;
+  displayName: string | null;
+  stravaAthleteId: string | null;
+};
+
+const hasOsBasemap = Boolean(OS_TILE_API_KEY && OS_TILE_URL_TEMPLATE);
+const getPeakIcon = (isBagged: boolean) => (isBagged ? baggedPeakIcon : remainingPeakIcon);
+
+const formatMetres = (value: number) => `${Math.round(value).toLocaleString("en-GB")} m`;
+
+const formatLastBagDate = (value: string | null) => {
+  if (!value) {
+    return "No summit recorded yet";
+  }
+
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(value));
+};
+
+const readStoredConnection = (): StoredConnection | null => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const rawValue = window.localStorage.getItem(CONNECTION_STORAGE_KEY);
+  if (!rawValue) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue) as StoredConnection;
+    if (!parsed.userId) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const persistConnection = (connection: StoredConnection | null) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (connection === null) {
+    window.localStorage.removeItem(CONNECTION_STORAGE_KEY);
+    return;
+  }
+
+  window.localStorage.setItem(CONNECTION_STORAGE_KEY, JSON.stringify(connection));
+};
+
+const buildStravaLoginUrl = () => {
+  if (typeof window === "undefined") {
+    return `${API_BASE_URL}/strava/oauth/login`;
+  }
+
+  const nextUrl = new URL(window.location.href);
+  nextUrl.searchParams.delete("status");
+  nextUrl.searchParams.delete("user_id");
+  nextUrl.searchParams.delete("display_name");
+  nextUrl.searchParams.delete("strava_athlete_id");
+  nextUrl.searchParams.delete("sync_enqueued");
+  nextUrl.searchParams.delete("sync_task_id");
+  nextUrl.searchParams.delete("error_code");
+  nextUrl.searchParams.delete("error_message");
+  return `${API_BASE_URL}/strava/oauth/login?next_url=${encodeURIComponent(nextUrl.toString())}`;
+};
+
+const getOsTileUrl = () => OS_TILE_URL_TEMPLATE.replace("{key}", encodeURIComponent(OS_TILE_API_KEY));
 
 const SetMapBounds = ({ munros }: { munros: Munro[] }) => {
   const map = useMap();
+
   useEffect(() => {
-    if (munros.length > 0) {
-      const bounds = L.latLngBounds(munros.map(m => [m.latitude, m.longitude]));
-      map.fitBounds(bounds, { padding: [50, 50] });
+    if (munros.length === 0) {
+      return;
     }
-  }, [munros, map]);
+
+    const bounds = L.latLngBounds(munros.map((munro) => [munro.latitude, munro.longitude]));
+    map.fitBounds(bounds, { padding: [50, 50] });
+  }, [map, munros]);
+
   return null;
 };
 
 const MapController = ({ targetMunro }: { targetMunro: Munro | null }) => {
   const map = useMap();
+
   useEffect(() => {
-    if (targetMunro) {
-      map.setView([targetMunro.latitude, targetMunro.longitude], 12, { animate: true });
+    if (!targetMunro) {
+      return;
     }
-  }, [targetMunro, map]);
+
+    map.setView([targetMunro.latitude, targetMunro.longitude], 12, { animate: true });
+  }, [map, targetMunro]);
+
   return null;
 };
 
 const App: React.FC = () => {
   const [munros, setMunros] = useState<Munro[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
+  const [connection, setConnection] = useState<StoredConnection | null>(() => readStoredConnection());
+  const [stravaOAuthStatus, setStravaOAuthStatus] = useState<StravaOAuthStatus | null>(null);
+  const [connectionReady, setConnectionReady] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [statusTone, setStatusTone] = useState<"success" | "error" | "info">("success");
+  const [loadingMunros, setLoadingMunros] = useState(true);
+  const [loadingDashboard, setLoadingDashboard] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [mapType, setMapType] = useState<'osm' | 'topo'>('osm');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filter, setFilter] = useState<'all' | 'bagged' | 'remaining'>('all');
-  const [sortBy, setSortBy] = useState<'height' | 'alphabetical'>('height');
+  const [mapType, setMapType] = useState<BasemapMode>(hasOsBasemap ? "os" : "topo");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "bagged" | "remaining">("all");
+  const [sortBy, setSortBy] = useState<"height" | "alphabetical">("height");
   const [selectedMunro, setSelectedMunro] = useState<Munro | null>(null);
 
   useEffect(() => {
-    const fetchMunros = async () => {
-      try {
-        setLoading(true);
-        const url = new URL(`${API_BASE_URL}/munros`, window.location.origin);
-        if (USER_ID) {
-          url.searchParams.append('user_id', USER_ID);
-        }
-        url.searchParams.append('limit', '300');
-        const response = await fetch(url.toString());
-        if (!response.ok) throw new Error('Failed to fetch Munros');
-        const data = await response.json();
-        setMunros(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchMunros();
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("status");
+
+    if (status === "connected" && params.get("user_id")) {
+      const nextConnection = {
+        userId: params.get("user_id") ?? "",
+        displayName: params.get("display_name"),
+        stravaAthleteId: params.get("strava_athlete_id"),
+      };
+      persistConnection(nextConnection);
+      setConnection(nextConnection);
+
+      const syncEnqueued = params.get("sync_enqueued") === "true";
+      setStatusTone("success");
+      setStatusMessage(
+        syncEnqueued
+          ? "Strava connected. Your latest activities are being synchronised."
+          : "Strava connected. You can trigger a sync again at any time."
+      );
+    } else if (status === "error") {
+      setStatusTone("error");
+      setStatusMessage(
+        params.get("error_message") || "Unable to start the Strava connection right now."
+      );
+    }
+
+    [
+      "status",
+      "user_id",
+      "display_name",
+      "strava_athlete_id",
+      "sync_enqueued",
+      "sync_task_id",
+      "error_code",
+      "error_message",
+    ].forEach((key) => params.delete(key));
+    const nextUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}${window.location.hash}`;
+    window.history.replaceState({}, "", nextUrl);
+    setConnectionReady(true);
   }, []);
 
-  const stats = useMemo(() => {
-    const total = munros.length;
-    const bagged = munros.filter(m => m.is_bagged).length;
-    const percentage = total > 0 ? ((bagged / total) * 100).toFixed(1) : '0.0';
-    const totalBaggedHeight = munros.filter(m => m.is_bagged).reduce((acc, m) => acc + m.height_metres, 0);
-    return { total, bagged, percentage, totalBaggedHeight };
-  }, [munros]);
+  useEffect(() => {
+    if (!connectionReady) {
+      return;
+    }
 
-  const filteredMunros = useMemo(() => {
+    const controller = new AbortController();
+
+    const fetchMunros = async () => {
+      try {
+        setLoadingMunros(true);
+        const searchParams = new URLSearchParams({ limit: "300" });
+        if (connection?.userId) {
+          searchParams.set("user_id", connection.userId);
+        }
+
+        const response = await fetch(`${API_BASE_URL}/munros?${searchParams.toString()}`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error("Failed to load Munros.");
+        }
+
+        const payload = (await response.json()) as Munro[];
+        if (payload.length === 0) {
+          throw new Error(
+            "Munro data has not been loaded yet. Restart the stack and check the munro-seed service."
+          );
+        }
+        setMunros(payload);
+        setError(null);
+      } catch (requestError) {
+        if (!controller.signal.aborted) {
+          setError(requestError instanceof Error ? requestError.message : "Unable to load Munros.");
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoadingMunros(false);
+        }
+      }
+    };
+
+    void fetchMunros();
+    return () => controller.abort();
+  }, [connection, connectionReady]);
+
+  useEffect(() => {
+    if (!connectionReady) {
+      return;
+    }
+
+    if (connection) {
+      setStravaOAuthStatus(null);
+      return;
+    }
+
+    const controller = new AbortController();
+
+    const fetchStravaStatus = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/strava/oauth/status`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error("Failed to load Strava status.");
+        }
+
+        const payload = (await response.json()) as StravaOAuthStatus;
+        setStravaOAuthStatus(payload);
+      } catch {
+        if (!controller.signal.aborted) {
+          setStravaOAuthStatus(null);
+        }
+      }
+    };
+
+    void fetchStravaStatus();
+    return () => controller.abort();
+  }, [connection, connectionReady]);
+
+  useEffect(() => {
+    if (!connectionReady) {
+      return;
+    }
+
+    if (!connection?.userId) {
+      setDashboard(null);
+      return;
+    }
+
+    const controller = new AbortController();
+
+    const fetchDashboard = async () => {
+      try {
+        setLoadingDashboard(true);
+        const response = await fetch(`${API_BASE_URL}/users/${connection.userId}/dashboard`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error("Failed to load dashboard statistics.");
+        }
+
+        const payload = (await response.json()) as DashboardSummary;
+        setDashboard(payload);
+      } catch (requestError) {
+        if (!controller.signal.aborted) {
+          setError(
+            requestError instanceof Error
+              ? requestError.message
+              : "Unable to load dashboard statistics."
+          );
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoadingDashboard(false);
+        }
+      }
+    };
+
+    void fetchDashboard();
+    return () => controller.abort();
+  }, [connection, connectionReady]);
+
+  const displayedMunros = useMemo(() => {
     return munros
-      .filter(m => {
-        const matchesSearch = m.name.toLowerCase().includes(searchQuery.toLowerCase());
+      .filter((munro) => {
+        const matchesSearch = munro.name.toLowerCase().includes(searchQuery.toLowerCase());
         const matchesFilter =
-          filter === 'all' ||
-          (filter === 'bagged' && m.is_bagged) ||
-          (filter === 'remaining' && !m.is_bagged);
+          filter === "all" ||
+          (filter === "bagged" && munro.is_bagged) ||
+          (filter === "remaining" && !munro.is_bagged);
         return matchesSearch && matchesFilter;
       })
-      .sort((a, b) => {
-        if (sortBy === 'height') return b.height_metres - a.height_metres;
-        return a.name.localeCompare(b.name);
+      .sort((left, right) => {
+        if (sortBy === "height") {
+          return right.height_metres - left.height_metres;
+        }
+        return left.name.localeCompare(right.name);
       });
-  }, [munros, searchQuery, filter, sortBy]);
+  }, [filter, munros, searchQuery, sortBy]);
 
-  if (loading) return (
-    <div className="flex h-screen items-center justify-center bg-slate-50">
-      <div className="text-center">
-        <div className="h-12 w-12 animate-spin rounded-full border-4 border-emerald-700 border-t-transparent mx-auto mb-4"></div>
-        <p className="text-emerald-900 font-medium">Loading Highlands...</p>
-      </div>
-    </div>
+  const summary = useMemo(() => {
+    return {
+      totalMunros: dashboard?.total_munros ?? munros.length,
+      baggedMunros: dashboard?.bagged_munros ?? 0,
+      completionPercentage: dashboard?.completion_percentage ?? 0,
+      totalAscentMetres: dashboard?.total_ascent_metres ?? 0,
+      lastBaggedAt: dashboard?.last_bagged_at ?? null,
+    };
+  }, [dashboard, munros.length]);
+
+  const mapOptions = useMemo(() => {
+    const options: Array<{ mode: BasemapMode; label: string; url: string; attribution: string }> = [];
+    if (hasOsBasemap) {
+      options.push({
+        mode: "os",
+        label: "OS Outdoor",
+        url: getOsTileUrl(),
+        attribution: OS_TILE_ATTRIBUTION,
+      });
+    }
+    options.push(
+      {
+        mode: "topo",
+        label: "OpenTopo",
+        url: TOPO_TILE_URL,
+        attribution: "&copy; OpenTopoMap contributors",
+      },
+      {
+        mode: "osm",
+        label: "OpenStreetMap",
+        url: OSM_TILE_URL,
+        attribution: "&copy; OpenStreetMap contributors",
+      }
+    );
+    return options;
+  }, []);
+
+  const activeMap = mapOptions.find((option) => option.mode === mapType) ?? mapOptions[0];
+  const isStravaUnavailable = Boolean(
+    !connection && stravaOAuthStatus && !stravaOAuthStatus.oauth_available
   );
 
-  if (error) return (
-    <div className="flex h-screen items-center justify-center bg-slate-50 p-6">
-      <div className="max-w-md rounded-2xl bg-white p-8 shadow-xl text-center">
-        <h2 className="text-rose-600 text-2xl font-bold mb-2">Error</h2>
-        <p className="text-slate-600 mb-6">{error}</p>
-        <button onClick={() => window.location.reload()} className="rounded-xl bg-emerald-700 px-6 py-2 text-white font-medium hover:bg-emerald-800 transition-colors">Retry</button>
+  if (loadingMunros) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-stone-100">
+        <div className="text-center">
+          <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-emerald-800 border-t-transparent" />
+          <p className="font-semibold text-emerald-950">Loading the Munros...</p>
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-stone-100 p-6">
+        <div className="max-w-md rounded-3xl border border-rose-200 bg-white p-8 text-center shadow-xl">
+          <h2 className="mb-2 text-2xl font-black text-rose-700">Something went wrong</h2>
+          <p className="mb-6 text-sm text-stone-600">{error}</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="rounded-xl bg-emerald-800 px-6 py-2 text-sm font-bold text-white transition hover:bg-emerald-900"
+          >
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden bg-slate-50 text-slate-900 font-sans">
-      {/* Mobile Overlay */}
+    <div className="relative flex h-screen w-screen overflow-hidden bg-stone-100 text-stone-900">
       {isSidebarOpen && (
-        <div className="fixed inset-0 z-[1001] bg-slate-900/40 backdrop-blur-sm lg:hidden" onClick={() => setIsSidebarOpen(false)} />
+        <div
+          className="fixed inset-0 z-[1001] bg-stone-950/45 backdrop-blur-sm lg:hidden"
+          onClick={() => setIsSidebarOpen(false)}
+        />
       )}
 
-      {/* Sidebar */}
-      <aside id="sidebar" className={`fixed inset-y-0 left-0 z-[1002] w-80 transform bg-white p-6 shadow-2xl transition-transform duration-300 ease-in-out lg:static lg:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="flex flex-col h-full">
-          <div className="mb-8">
-            <div className="flex items-center justify-between mb-4">
-              <h1 className="text-2xl font-black tracking-tight text-emerald-900">MunroStream</h1>
-              <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-slate-600" aria-label="Close sidebar">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      <aside
+        id="sidebar"
+        className={`fixed inset-y-0 left-0 z-[1002] w-96 transform bg-[#fffaf1] p-6 shadow-2xl transition-transform duration-300 ease-in-out lg:static lg:translate-x-0 ${isSidebarOpen ? "translate-x-0" : "-translate-x-full"}`}
+      >
+        <div className="flex h-full flex-col">
+          <div className="mb-6">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.3em] text-emerald-800/70">
+                  Scottish hill bagging
+                </p>
+                <h1 className="mt-1 text-3xl font-black tracking-tight text-emerald-950">
+                  MunroStream
+                </h1>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSidebarOpen(false)}
+                className="text-stone-400 transition hover:text-stone-700 lg:hidden"
+                aria-label="Close sidebar"
+              >
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
               </button>
             </div>
 
-            <div className="rounded-2xl bg-emerald-50 p-4 border border-emerald-100">
-              <div className="flex justify-between items-end mb-2">
+            {statusMessage ? (
+              <div
+                data-testid="connection-status"
+                className={`mb-4 rounded-2xl px-4 py-3 text-sm ${
+                  statusTone === "error"
+                    ? "border border-rose-200 bg-rose-50 text-rose-900"
+                    : statusTone === "info"
+                      ? "border border-stone-200 bg-stone-100 text-stone-800"
+                      : "border border-emerald-200 bg-emerald-50 text-emerald-950"
+                }`}
+              >
+                {statusMessage}
+              </div>
+            ) : null}
+
+            <div className="rounded-[28px] bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-800 p-5 text-white shadow-xl">
+              <div className="flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-emerald-700 opacity-70">Progress</p>
-                  <p className="text-2xl font-black text-emerald-900">{stats.bagged} / {stats.total}</p>
+                  <p className="text-[11px] font-black uppercase tracking-[0.25em] text-emerald-100/80">
+                    Progress
+                  </p>
+                  <p data-testid="bagged-count" className="mt-2 text-3xl font-black">
+                    {summary.baggedMunros} / {summary.totalMunros}
+                  </p>
                 </div>
                 <div className="text-right">
-                  <p className="text-xs font-bold uppercase tracking-wider text-emerald-700 opacity-70">Total Ascent</p>
-                  <p className="text-sm font-bold text-emerald-900">{stats.totalBaggedHeight.toLocaleString()}m</p>
+                  <p className="text-[11px] font-black uppercase tracking-[0.25em] text-emerald-100/80">
+                    Completion
+                  </p>
+                  <p className="mt-2 text-xl font-black">
+                    {summary.completionPercentage.toFixed(1)}%
+                  </p>
                 </div>
               </div>
-              <div className="h-2 w-full rounded-full bg-emerald-200 overflow-hidden">
-                <div className="h-full bg-emerald-600 transition-all duration-1000" style={{ width: `${stats.percentage}%` }} />
+              <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/20">
+                <div
+                  className="h-full rounded-full bg-lime-300 transition-all duration-700"
+                  style={{ width: `${summary.completionPercentage}%` }}
+                />
               </div>
-              <p className="mt-2 text-right text-xs font-bold text-emerald-700">{stats.percentage}% Complete</p>
+              <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                <div className="rounded-2xl bg-white/10 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-100/80">
+                    Total ascent
+                  </p>
+                  <p data-testid="total-ascent" className="mt-2 font-bold">
+                    {loadingDashboard && connection ? "Loading..." : formatMetres(summary.totalAscentMetres)}
+                  </p>
+                </div>
+                <div className="rounded-2xl bg-white/10 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-100/80">
+                    Last bag
+                  </p>
+                  <p data-testid="last-bagged-at" className="mt-2 font-bold">
+                    {loadingDashboard && connection ? "Loading..." : formatLastBagDate(summary.lastBaggedAt)}
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
 
-          <div className="space-y-4 mb-6">
+          <div className="mb-5 rounded-3xl border border-stone-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-black uppercase tracking-[0.25em] text-stone-500">
+                  Strava
+                </p>
+                <p className="mt-2 text-sm text-stone-700">
+                  {connection
+                    ? `Connected as ${connection.displayName || "your athlete profile"}.`
+                    : isStravaUnavailable
+                      ? stravaOAuthStatus?.message
+                      : "Connect Strava to sync bagged Munros, total ascent and your latest summit date."}
+                </p>
+              </div>
+              {connection ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    persistConnection(null);
+                    setConnection(null);
+                    setStatusTone("info");
+                    setStatusMessage("Local Strava session cleared from this browser.");
+                  }}
+                  className="rounded-xl border border-stone-200 px-3 py-2 text-xs font-black uppercase tracking-[0.2em] text-stone-600 transition hover:border-stone-300 hover:text-stone-900"
+                >
+                  Clear
+                </button>
+              ) : null}
+            </div>
+            {!connection && isStravaUnavailable ? (
+              <button
+                type="button"
+                data-testid="connect-strava-unavailable"
+                disabled
+                className="mt-4 inline-flex cursor-not-allowed rounded-xl bg-stone-300 px-4 py-3 text-sm font-black text-stone-600"
+              >
+                Strava unavailable
+              </button>
+            ) : null}
+            {!connection && !isStravaUnavailable ? (
+              <a
+                data-testid="connect-strava"
+                href={buildStravaLoginUrl()}
+                className="mt-4 inline-flex rounded-xl bg-orange-500 px-4 py-3 text-sm font-black text-white transition hover:bg-orange-600"
+              >
+                Connect Strava
+              </a>
+            ) : null}
+          </div>
+
+          <div className="mb-5 space-y-4">
             <div className="relative">
               <input
-                type="text" placeholder="Search Munros..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full rounded-xl border-none bg-slate-100 px-4 py-2.5 pl-10 text-sm focus:ring-2 focus:ring-emerald-500/20"
+                type="text"
+                placeholder="Search Munros"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                className="w-full rounded-2xl border border-transparent bg-white px-4 py-3 pl-10 text-sm shadow-sm outline-none transition focus:border-emerald-300"
               />
-              <svg className="absolute left-3 top-3 text-slate-400" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+              <svg
+                className="absolute left-3 top-3.5 text-stone-400"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <circle cx="11" cy="11" r="8" />
+                <path d="M21 21l-4.35-4.35" />
+              </svg>
             </div>
 
             <div className="grid grid-cols-3 gap-2">
-              {(['all', 'bagged', 'remaining'] as const).map(f => (
-                <button key={f} onClick={() => setFilter(f)} className={`rounded-lg py-1.5 text-xs font-bold capitalize transition-all ${filter === f ? 'bg-emerald-800 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
-                  {f}
+              {(["all", "bagged", "remaining"] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setFilter(value)}
+                  className={`rounded-xl py-2 text-xs font-black uppercase tracking-[0.18em] transition ${
+                    filter === value
+                      ? "bg-emerald-900 text-white shadow-md"
+                      : "bg-white text-stone-500 shadow-sm hover:text-stone-900"
+                  }`}
+                >
+                  {value}
                 </button>
               ))}
             </div>
 
-            <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-slate-400 px-1">
-              <span>Sort by</span>
+            <div className="flex items-center justify-between px-1 text-[10px] font-black uppercase tracking-[0.25em] text-stone-500">
+              <span>Sort</span>
               <div className="flex gap-3">
-                <button onClick={() => setSortBy('height')} className={`hover:text-emerald-700 ${sortBy === 'height' ? 'text-emerald-700' : ''}`}>Height</button>
-                <button onClick={() => setSortBy('alphabetical')} className={`hover:text-emerald-700 ${sortBy === 'alphabetical' ? 'text-emerald-700' : ''}`}>A-Z</button>
+                <button
+                  type="button"
+                  onClick={() => setSortBy("height")}
+                  className={sortBy === "height" ? "text-emerald-900" : ""}
+                >
+                  Height
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSortBy("alphabetical")}
+                  className={sortBy === "alphabetical" ? "text-emerald-900" : ""}
+                >
+                  A-Z
+                </button>
               </div>
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto -mx-2 px-2 space-y-2 custom-scrollbar">
-            {filteredMunros.map(m => (
+          <div className="-mx-2 flex-1 space-y-2 overflow-y-auto px-2 custom-scrollbar">
+            {displayedMunros.map((munro) => (
               <button
-                key={m.id} onClick={() => { setSelectedMunro(m); if(window.innerWidth < 1024) setIsSidebarOpen(false); }}
-                className="w-full text-left group flex items-center justify-between rounded-xl border border-transparent bg-white p-3 hover:bg-slate-50 hover:border-slate-200 transition-all shadow-sm"
+                key={munro.id}
+                type="button"
+                onClick={() => {
+                  setSelectedMunro(munro);
+                  if (window.innerWidth < 1024) {
+                    setIsSidebarOpen(false);
+                  }
+                }}
+                className="flex w-full items-center justify-between rounded-2xl border border-transparent bg-white p-3 text-left shadow-sm transition hover:border-stone-200 hover:bg-stone-50"
               >
                 <div>
-                  <h3 className="text-sm font-bold text-slate-800 group-hover:text-emerald-900 transition-colors">{m.name}</h3>
-                  <p className="text-xs font-medium text-slate-400">{m.height_metres}m</p>
+                  <h3 className="text-sm font-bold text-stone-900">{munro.name}</h3>
+                  <p className="text-xs text-stone-500">{formatMetres(munro.height_metres)}</p>
                 </div>
-                <div className={`h-2 w-2 rounded-full ${m.is_bagged ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                <div className={`h-2.5 w-2.5 rounded-full ${munro.is_bagged ? "bg-emerald-600" : "bg-rose-500"}`} />
               </button>
             ))}
-            {filteredMunros.length === 0 && <p className="text-center text-sm text-slate-400 py-8">No matching peaks.</p>}
+            {displayedMunros.length === 0 ? (
+              <p className="py-8 text-center text-sm text-stone-500">No Munros match that search.</p>
+            ) : null}
           </div>
         </div>
       </aside>
 
-      {/* Main Content */}
       <main className="relative flex-1">
-        <button onClick={() => setIsSidebarOpen(true)} className="absolute left-4 top-4 z-[1000] rounded-2xl bg-white p-3 shadow-xl lg:hidden hover:bg-slate-50" aria-label="Open menu" aria-expanded={isSidebarOpen} aria-controls="sidebar">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        <button
+          type="button"
+          onClick={() => setIsSidebarOpen(true)}
+          className="absolute left-4 top-4 z-[1000] rounded-2xl bg-white p-3 shadow-xl hover:bg-stone-50 lg:hidden"
+          aria-label="Open menu"
+          aria-controls="sidebar"
+          aria-expanded={isSidebarOpen}
+        >
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 12h18M3 6h18M3 18h18" />
+          </svg>
         </button>
 
-        <div className="absolute right-4 top-4 z-[1000] flex rounded-2xl bg-white/90 backdrop-blur p-1 shadow-xl border border-white">
-          <button onClick={() => setMapType('osm')} className={`rounded-xl px-4 py-2 text-xs font-black transition-all ${mapType === 'osm' ? 'bg-emerald-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>OSM</button>
-          <button onClick={() => setMapType('topo')} className={`rounded-xl px-4 py-2 text-xs font-black transition-all ${mapType === 'topo' ? 'bg-emerald-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`}>OS Map</button>
+        <div className="absolute right-4 top-4 z-[1000] flex flex-wrap gap-2 rounded-[22px] bg-white/90 p-2 shadow-xl backdrop-blur">
+          {mapOptions.map((option) => (
+            <button
+              key={option.mode}
+              type="button"
+              onClick={() => setMapType(option.mode)}
+              className={`rounded-2xl px-4 py-2 text-xs font-black uppercase tracking-[0.18em] transition ${
+                mapType === option.mode
+                  ? "bg-emerald-900 text-white"
+                  : "text-stone-600 hover:bg-stone-100"
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
         </div>
 
-        <MapContainer center={[56.817, -4.183]} zoom={7} style={{ height: '100%', width: '100%' }} zoomControl={false}>
-          <TileLayer attribution="&copy; OpenStreetMap &copy; OpenTopoMap" url={mapType === 'osm' ? OSM_URL : TOPO_URL} />
+        <MapContainer
+          center={[56.817, -4.183]}
+          zoom={7}
+          style={{ height: "100%", width: "100%" }}
+          zoomControl={false}
+        >
+          <TileLayer attribution={activeMap.attribution} url={activeMap.url} />
           <SetMapBounds munros={munros} />
           <MapController targetMunro={selectedMunro} />
-          {munros.map(m => (
-            <Marker key={m.id} position={[m.latitude, m.longitude]} icon={getPeakIcon(m.is_bagged)}>
+          {munros.map((munro) => (
+            <Marker
+              key={munro.id}
+              position={[munro.latitude, munro.longitude]}
+              icon={getPeakIcon(munro.is_bagged)}
+            >
               <Popup className="custom-popup">
                 <div className="p-1">
-                  <h3 className="text-base font-black text-emerald-900 mb-1">{m.name}</h3>
+                  <h3 className="mb-1 text-base font-black text-emerald-950">{munro.name}</h3>
                   <div className="flex items-center justify-between gap-4">
-                    <span className="text-sm font-bold text-slate-500">{m.height_metres}m</span>
-                    <span className={`text-[10px] font-black uppercase tracking-widest ${m.is_bagged ? 'text-emerald-600' : 'text-rose-600'}`}>
-                      {m.is_bagged ? 'Bagged ✓' : 'Remaining'}
+                    <span className="text-sm font-bold text-stone-500">
+                      {formatMetres(munro.height_metres)}
+                    </span>
+                    <span
+                      className={`text-[10px] font-black uppercase tracking-[0.2em] ${
+                        munro.is_bagged ? "text-emerald-700" : "text-rose-600"
+                      }`}
+                    >
+                      {munro.is_bagged ? "Bagged" : "Remaining"}
                     </span>
                   </div>
                 </div>

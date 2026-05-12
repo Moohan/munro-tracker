@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.db.session import get_db
+from app.infrastructure.session import get_db
 
 @pytest.fixture
 def override_db() -> MagicMock:

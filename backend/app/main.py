@@ -26,8 +26,9 @@ app.include_router(api_router, prefix=settings.api_v1_prefix)
 
 @app.get("/", tags=["meta"])
 def root() -> dict[str, str]:
+    current_settings = get_settings()
     return {
-        "service": settings.app_name,
+        "service": current_settings.app_name,
         "docs": "/docs",
-        "api": settings.api_v1_prefix,
+        "api": current_settings.api_v1_prefix,
     }

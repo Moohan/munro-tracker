@@ -11,10 +11,15 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         "/api": {
-          target: env.VITE_API_PROXY_TARGET || "http://api:8000",
+          target: env.VITE_API_PROXY_TARGET || "http://api:18000",
           changeOrigin: true,
         },
       },
+    },
+    test: {
+      environment: "jsdom",
+      setupFiles: "./src/setupTests.ts",
+      css: true,
     },
   };
 });

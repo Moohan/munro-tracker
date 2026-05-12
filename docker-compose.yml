@@ -32,6 +32,19 @@ services:
       timeout: 5s
       retries: 5
 
+  munro-seed:
+    build:
+      context: ./backend
+    container_name: munrostream-seed
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://munro:munro@db:5432/munrostream}
+    command: ["python", "scripts/seed_munros.py", "--skip-if-seeded"]
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+
   api:
     build:
       context: ./backend
@@ -45,19 +58,22 @@ services:
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
       STRAVA_CLIENT_ID: ${STRAVA_CLIENT_ID:-0}
       STRAVA_CLIENT_SECRET: ${STRAVA_CLIENT_SECRET:-replace-me}
-      STRAVA_REDIRECT_URI: ${STRAVA_REDIRECT_URI:-http://localhost:8000/api/v1/strava/oauth/callback}
+      STRAVA_REDIRECT_URI: ${STRAVA_REDIRECT_URI:-http://localhost:18000/api/v1/strava/oauth/callback}
       STRAVA_OAUTH_STATE_TTL_SECONDS: ${STRAVA_OAUTH_STATE_TTL_SECONDS:-600}
       STRAVA_SYNC_ACTIVITY_LIMIT: ${STRAVA_SYNC_ACTIVITY_LIMIT:-25}
       STRAVA_WEBHOOK_SECRET: ${STRAVA_WEBHOOK_SECRET:-replace-me}
+      STRAVA_WEBHOOK_VERIFY_TOKEN: ${STRAVA_WEBHOOK_VERIFY_TOKEN:-replace-me}
       FRONTEND_ORIGIN: http://localhost:${FRONTEND_PORT:-5173}
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "18000", "--reload"]
     volumes:
       - ./backend:/app
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "${API_PORT:-18000}:18000"
     depends_on:
       db:
         condition: service_healthy
+      munro-seed:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
@@ -74,10 +90,11 @@ services:
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/1}
       STRAVA_CLIENT_ID: ${STRAVA_CLIENT_ID:-0}
       STRAVA_CLIENT_SECRET: ${STRAVA_CLIENT_SECRET:-replace-me}
-      STRAVA_REDIRECT_URI: ${STRAVA_REDIRECT_URI:-http://localhost:8000/api/v1/strava/oauth/callback}
+      STRAVA_REDIRECT_URI: ${STRAVA_REDIRECT_URI:-http://localhost:18000/api/v1/strava/oauth/callback}
       STRAVA_OAUTH_STATE_TTL_SECONDS: ${STRAVA_OAUTH_STATE_TTL_SECONDS:-600}
       STRAVA_SYNC_ACTIVITY_LIMIT: ${STRAVA_SYNC_ACTIVITY_LIMIT:-25}
       STRAVA_WEBHOOK_SECRET: ${STRAVA_WEBHOOK_SECRET:-replace-me}
+      STRAVA_WEBHOOK_VERIFY_TOKEN: ${STRAVA_WEBHOOK_VERIFY_TOKEN:-replace-me}
       FRONTEND_ORIGIN: http://localhost:${FRONTEND_PORT:-5173}
     command:
       [
@@ -92,6 +109,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      munro-seed:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
@@ -100,8 +119,11 @@ services:
       context: ./frontend
     container_name: munrostream-frontend
     environment:
-      VITE_API_PROXY_TARGET: http://api:8000
+      VITE_API_PROXY_TARGET: http://api:18000
       VITE_API_BASE_URL: /api/v1
+      VITE_OS_MAPS_API_KEY: ${VITE_OS_MAPS_API_KEY:-}
+      VITE_OS_MAPS_TILE_URL_TEMPLATE: ${VITE_OS_MAPS_TILE_URL_TEMPLATE:-https://api.os.uk/maps/raster/v1/zxy/Outdoor_3857/{z}/{x}/{y}.png?key={key}}
+      VITE_OS_MAPS_ATTRIBUTION: ${VITE_OS_MAPS_ATTRIBUTION:-Contains OS data &copy; Crown copyright and database rights}
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
     volumes:
       - ./frontend:/app

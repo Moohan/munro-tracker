@@ -19,3 +19,5 @@ class User(Base):
     token_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     user_bags = relationship("UserBag", back_populates="user")
+    strava_activities = relationship("StravaActivity", back_populates="user")
+    strava_webhook_events = relationship("StravaWebhookEvent", back_populates="user")

@@ -3,9 +3,9 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select, exists, literal
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
 from app.models import Munro, UserBag
 from app.schemas.munro import MunroSummary
+from app.infrastructure.session import get_db
 
 router = APIRouter()
 

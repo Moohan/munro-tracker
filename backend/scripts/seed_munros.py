@@ -17,8 +17,9 @@ from sqlalchemy import bindparam, create_engine, inspect, text
 from sqlalchemy import Text as SqlText
 from sqlalchemy.dialects.postgresql import ARRAY
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-BACKEND_ROOT = PROJECT_ROOT / "backend"
+SCRIPT_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = SCRIPT_ROOT if (SCRIPT_ROOT / "app").exists() else Path(__file__).resolve().parents[2] / "backend"
+PROJECT_ROOT = BACKEND_ROOT.parent
 
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
@@ -123,6 +124,14 @@ def parse_args() -> argparse.Namespace:
         "--verify-only",
         action="store_true",
         help="Download and validate the source count without writing to PostGIS.",
+    )
+    parser.add_argument(
+        "--skip-if-seeded",
+        action="store_true",
+        help=(
+            "Exit successfully without downloading DoBIH when the database already "
+            f"contains exactly {EXPECTED_MUNRO_COUNT} Munros."
+        ),
     )
     return parser.parse_args()
 
@@ -251,11 +260,35 @@ def seed_database(database_url: str, munros: list[MunroSeedRow]) -> int:
         engine.dispose()
 
 
+def has_expected_seeded_munros(database_url: str) -> bool:
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        with engine.begin() as connection:
+            if not inspect(connection).has_table("munros"):
+                raise RuntimeError(
+                    "The munros table does not exist. Initialise the database schema first."
+                )
+
+            munro_count = connection.execute(
+                text("SELECT COUNT(*) FROM munros WHERE is_munro_top = FALSE")
+            ).scalar_one()
+            return int(munro_count) == EXPECTED_MUNRO_COUNT
+    finally:
+        engine.dispose()
+
+
 def main() -> None:
     load_project_env()
     args = parse_args()
     settings = get_settings()
     database_url = args.database_url or settings.database_url
+
+    if args.skip_if_seeded and has_expected_seeded_munros(database_url):
+        print(
+            "Munro seed already loaded. "
+            f"Found exactly {EXPECTED_MUNRO_COUNT} Munros, so the DoBIH download was skipped."
+        )
+        return
 
     with tempfile.TemporaryDirectory(prefix="dobih_") as tmp_dir:
         temp_dir = Path(tmp_dir)

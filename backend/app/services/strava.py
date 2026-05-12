@@ -66,6 +66,59 @@ def get_strava_redirect_uri(request: Request) -> str:
     return settings.strava_redirect_uri or str(request.url_for("strava_oauth_callback"))
 
 
+def get_strava_webhook_verify_token() -> str:
+    settings = get_settings()
+    token = (
+        (settings.strava_webhook_verify_token or "").strip()
+        or settings.strava_webhook_secret.strip()
+    )
+    if not token or token == "replace-me":
+        raise ValueError("STRAVA_WEBHOOK_VERIFY_TOKEN is not configured.")
+    return token
+
+
+def get_strava_oauth_status() -> dict[str, bool | str | None]:
+    settings = get_settings()
+    client_id_missing = settings.strava_client_id <= 0
+    client_secret_missing = _is_missing_client_secret(settings.strava_client_secret)
+
+    if client_id_missing and client_secret_missing:
+        return {
+            "oauth_available": False,
+            "reason": "missing_client_id",
+            "message": (
+                "Strava connection is not available in this local setup yet. "
+                "Add STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET to enable it."
+            ),
+        }
+
+    if client_id_missing:
+        return {
+            "oauth_available": False,
+            "reason": "missing_client_id",
+            "message": (
+                "Strava connection is not available in this local setup yet. "
+                "Add STRAVA_CLIENT_ID to enable it."
+            ),
+        }
+
+    if client_secret_missing:
+        return {
+            "oauth_available": False,
+            "reason": "missing_client_secret",
+            "message": (
+                "Strava connection is not available in this local setup yet. "
+                "Add STRAVA_CLIENT_SECRET to enable it."
+            ),
+        }
+
+    return {
+        "oauth_available": True,
+        "reason": None,
+        "message": "Strava OAuth is available.",
+    }
+
+
 def create_oauth_state(next_url: str | None = None) -> str:
     payload = {
         "iat": int(time.time()),
@@ -280,7 +333,7 @@ def _ensure_utc_datetime(value: datetime) -> datetime:
 def _require_strava_client_secret() -> str:
     settings = get_settings()
     client_secret = settings.strava_client_secret.strip()
-    if not client_secret or client_secret == "replace-me":
+    if _is_missing_client_secret(client_secret):
         raise ValueError("STRAVA_CLIENT_SECRET is not configured.")
     if settings.strava_client_id <= 0:
         raise ValueError("STRAVA_CLIENT_ID is not configured.")
@@ -303,3 +356,7 @@ def _urlsafe_b64encode(value: bytes) -> str:
 def _urlsafe_b64decode(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
     return base64.urlsafe_b64decode(value + padding)
+
+
+def _is_missing_client_secret(value: str) -> bool:
+    return not value.strip() or value.strip() == "replace-me"

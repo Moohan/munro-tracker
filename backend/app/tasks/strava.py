@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from decimal import Decimal
+from typing import Any, Iterable
 
 from celery import shared_task
 from sqlalchemy import text
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.infrastructure.session import SessionLocal
-from app.models import User
+from app.models import StravaActivity, User
 from app.services.strava import (
     build_authenticated_client,
     ensure_fresh_access_token,
@@ -37,6 +38,7 @@ matched_summits AS (
     CROSS JOIN submitted_track AS t
     WHERE m.is_munro_top = FALSE
       AND ST_DWithin(t.geom::geography, m.geom::geography, 100)
+      AND CAST(:highest_point_metres AS NUMERIC(8, 2)) >= (m.height_metres - 20.0)
 )
 INSERT INTO user_bags (
     user_id,
@@ -83,74 +85,49 @@ def sync_latest_activities_for_user(
 ) -> dict[str, object]:
     session = SessionLocal()
     try:
-        user_uuid: uuid.UUID = uuid.UUID(user_id)
-        user = session.get(User, user_uuid)
-        if user is None:
-            raise ValueError(f"User {user_id} was not found.")
-
+        user = _load_user(session, user_id)
         limit = activity_limit or get_settings().strava_sync_activity_limit
-        access_token: str
-        token_refreshed: bool
-        access_token, token_refreshed = ensure_fresh_access_token(session, user)
-        if token_refreshed:
-            # Persist the rotated refresh token immediately so subsequent runs
-            # never fall back to an invalidated token.
-            session.commit()
+        client = _build_client_for_user(session, user)
 
-        client = build_authenticated_client(access_token)
-        activities = list(client.get_activities(limit=limit))
+        activity_ids = [
+            int(activity.id)
+            for activity in client.get_activities(limit=limit)
+            if getattr(activity, "id", None) is not None
+        ]
+        result = _initial_result_payload(str(user.id), len(activity_ids))
+        _process_activity_ids(
+            session=session,
+            user=user,
+            client=client,
+            activity_ids=activity_ids,
+            result=result,
+        )
+        return result
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
-        result = {
-            "status": "completed",
-            "user_id": str(user.id),
-            "activities_seen": len(activities),
-            "activities_processed": 0,
-            "activities_with_matches": 0,
-            "activities_skipped_no_polyline": 0,
-            "activities_skipped_invalid_polyline": 0,
-            "bag_rows_written": 0,
-        }
 
-        for activity_summary in activities:
-            activity_id = getattr(activity_summary, "id", None)
-            if activity_id is None:
-                result["activities_skipped_invalid_polyline"] += 1
-                continue
+@shared_task(name="app.tasks.strava.sync_activity_for_user")
+def sync_activity_for_user(
+    user_id: str,
+    activity_id: int,
+) -> dict[str, object]:
+    session = SessionLocal()
+    try:
+        user = _load_user(session, user_id)
+        client = _build_client_for_user(session, user)
 
-            detailed_activity = client.get_activity(int(activity_id))
-            encoded_polyline = extract_activity_polyline(detailed_activity)
-            if not encoded_polyline:
-                result["activities_skipped_no_polyline"] += 1
-                continue
-
-            try:
-                coordinates = decode_polyline(encoded_polyline)
-            except ValueError:
-                session.rollback()
-                result["activities_skipped_invalid_polyline"] += 1
-                continue
-
-            if not coordinates:
-                result["activities_skipped_invalid_polyline"] += 1
-                continue
-
-            matches = _upsert_user_bags_for_track(
-                session=session,
-                user_id=user.id,
-                activity_id=int(activity_id),
-                bagged_at=_coerce_activity_time(
-                    getattr(detailed_activity, "start_date", None)
-                    or getattr(detailed_activity, "start_date_local", None)
-                ),
-                coordinates=coordinates,
-            )
-            session.commit()
-
-            result["activities_processed"] += 1
-            result["bag_rows_written"] += len(matches)
-            if matches:
-                result["activities_with_matches"] += 1
-
+        result = _initial_result_payload(str(user.id), 1)
+        _process_activity_ids(
+            session=session,
+            user=user,
+            client=client,
+            activity_ids=[int(activity_id)],
+            result=result,
+        )
         return result
     except Exception:
         session.rollback()
@@ -174,6 +151,150 @@ def decode_polyline(encoded_polyline: str) -> list[tuple[float, float]]:
         coordinates.append((latitude / 1e5, longitude / 1e5))
 
     return coordinates
+
+
+def _initial_result_payload(user_id: str, activities_seen: int) -> dict[str, object]:
+    return {
+        "status": "completed",
+        "user_id": user_id,
+        "activities_seen": activities_seen,
+        "activities_processed": 0,
+        "activities_with_matches": 0,
+        "activities_skipped_no_polyline": 0,
+        "activities_skipped_invalid_polyline": 0,
+        "activities_skipped_unverified_elevation": 0,
+        "bag_rows_written": 0,
+    }
+
+
+def _load_user(session: Session, user_id: str) -> User:
+    user_uuid = uuid.UUID(user_id)
+    user = session.get(User, user_uuid)
+    if user is None:
+        raise ValueError(f"User {user_id} was not found.")
+    return user
+
+
+def _build_client_for_user(session: Session, user: User) -> Any:
+    access_token, token_refreshed = ensure_fresh_access_token(session, user)
+    if token_refreshed:
+        session.commit()
+    return build_authenticated_client(access_token)
+
+
+def _process_activity_ids(
+    *,
+    session: Session,
+    user: User,
+    client: Any,
+    activity_ids: Iterable[int],
+    result: dict[str, object],
+) -> None:
+    for activity_id in activity_ids:
+        activity_result = _process_single_activity(
+            session=session,
+            user=user,
+            client=client,
+            activity_id=int(activity_id),
+        )
+        session.commit()
+        result["activities_processed"] = int(result["activities_processed"]) + 1
+
+        if activity_result["status"] == "skipped_no_polyline":
+            result["activities_skipped_no_polyline"] = (
+                int(result["activities_skipped_no_polyline"]) + 1
+            )
+        elif activity_result["status"] == "skipped_invalid_polyline":
+            result["activities_skipped_invalid_polyline"] = (
+                int(result["activities_skipped_invalid_polyline"]) + 1
+            )
+        elif activity_result["status"] == "skipped_unverified_elevation":
+            result["activities_skipped_unverified_elevation"] = (
+                int(result["activities_skipped_unverified_elevation"]) + 1
+            )
+
+        bag_rows_written = int(activity_result["bag_rows_written"])
+        result["bag_rows_written"] = int(result["bag_rows_written"]) + bag_rows_written
+        if bag_rows_written > 0:
+            result["activities_with_matches"] = (
+                int(result["activities_with_matches"]) + 1
+            )
+
+
+def _process_single_activity(
+    *,
+    session: Session,
+    user: User,
+    client: Any,
+    activity_id: int,
+) -> dict[str, object]:
+    detailed_activity = client.get_activity(activity_id)
+    encoded_polyline = extract_activity_polyline(detailed_activity)
+    highest_point_metres = _extract_highest_point_metres(
+        client,
+        activity_id,
+        detailed_activity,
+    )
+    activity = _upsert_strava_activity(
+        session=session,
+        user_id=user.id,
+        activity_id=activity_id,
+        detailed_activity=detailed_activity,
+        summary_polyline=encoded_polyline,
+        highest_point_metres=highest_point_metres,
+    )
+
+    if not encoded_polyline:
+        _mark_activity_status(
+            activity,
+            processing_status="skipped_no_polyline",
+            processing_error="Activity did not include a summary polyline.",
+        )
+        return {"status": "skipped_no_polyline", "bag_rows_written": 0}
+
+    try:
+        coordinates = decode_polyline(encoded_polyline)
+    except ValueError:
+        _mark_activity_status(
+            activity,
+            processing_status="skipped_invalid_polyline",
+            processing_error="Activity polyline could not be decoded.",
+        )
+        return {"status": "skipped_invalid_polyline", "bag_rows_written": 0}
+
+    if not coordinates:
+        _mark_activity_status(
+            activity,
+            processing_status="skipped_invalid_polyline",
+            processing_error="Activity polyline did not contain coordinates.",
+        )
+        return {"status": "skipped_invalid_polyline", "bag_rows_written": 0}
+
+    if highest_point_metres is None:
+        _mark_activity_status(
+            activity,
+            processing_status="skipped_unverified_elevation",
+            processing_error="Activity did not include a usable summit elevation reading.",
+        )
+        return {"status": "skipped_unverified_elevation", "bag_rows_written": 0}
+
+    matches = _upsert_user_bags_for_track(
+        session=session,
+        user_id=user.id,
+        activity_id=activity_id,
+        bagged_at=_coerce_activity_time(
+            getattr(detailed_activity, "start_date", None)
+            or getattr(detailed_activity, "start_date_local", None)
+        ),
+        coordinates=coordinates,
+        highest_point_metres=highest_point_metres,
+    )
+    _mark_activity_status(
+        activity,
+        processing_status="processed",
+        processing_error=None,
+    )
+    return {"status": "processed", "bag_rows_written": len(matches)}
 
 
 def _decode_polyline_value(
@@ -207,6 +328,7 @@ def _upsert_user_bags_for_track(
     activity_id: int,
     bagged_at: datetime,
     coordinates: list[tuple[float, float]],
+    highest_point_metres: float,
 ) -> list[dict[str, Any]]:
     track_wkt = _coordinates_to_wkt(coordinates)
     rows = session.execute(
@@ -216,9 +338,56 @@ def _upsert_user_bags_for_track(
             "activity_id": activity_id,
             "bagged_at": bagged_at,
             "track_wkt": track_wkt,
+            "highest_point_metres": highest_point_metres,
         },
     ).mappings()
     return [dict(row) for row in rows]
+
+
+def _upsert_strava_activity(
+    *,
+    session: Session,
+    user_id: uuid.UUID,
+    activity_id: int,
+    detailed_activity: Any,
+    summary_polyline: str | None,
+    highest_point_metres: float | None,
+) -> StravaActivity:
+    activity = session.get(StravaActivity, (user_id, activity_id))
+    if activity is None:
+        activity = StravaActivity(user_id=user_id, strava_activity_id=activity_id)
+
+    activity.name = _coerce_text(getattr(detailed_activity, "name", None))
+    activity.sport_type = _coerce_text(
+        getattr(detailed_activity, "sport_type", None)
+        or getattr(detailed_activity, "type", None)
+    )
+    activity.started_at = _coerce_activity_time(
+        getattr(detailed_activity, "start_date", None)
+        or getattr(detailed_activity, "start_date_local", None)
+    )
+    activity.distance_metres = _to_decimal(getattr(detailed_activity, "distance", None))
+    activity.total_elevation_gain_metres = _to_decimal(
+        getattr(detailed_activity, "total_elevation_gain", None)
+    )
+    activity.highest_point_metres = _to_decimal(highest_point_metres)
+    activity.summary_polyline = summary_polyline
+    activity.processing_error = None
+    activity.processing_status = activity.processing_status or "pending"
+    session.add(activity)
+    session.flush()
+    return activity
+
+
+def _mark_activity_status(
+    activity: StravaActivity,
+    *,
+    processing_status: str,
+    processing_error: str | None,
+) -> None:
+    activity.processing_status = processing_status
+    activity.processing_error = processing_error
+    activity.processed_at = datetime.now(timezone.utc)
 
 
 def _coordinates_to_wkt(coordinates: list[tuple[float, float]]) -> str:
@@ -238,3 +407,93 @@ def _coerce_activity_time(value: Any) -> datetime:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
     return datetime.now(timezone.utc)
+
+
+def _extract_highest_point_metres(
+    client: Any,
+    activity_id: int,
+    detailed_activity: Any,
+) -> float | None:
+    direct_high_point = _coerce_float(getattr(detailed_activity, "elev_high", None))
+    if direct_high_point is not None:
+        return direct_high_point
+
+    stream_payload = _get_activity_streams(client, activity_id)
+    altitude_values = _extract_stream_values(stream_payload, "altitude")
+    if altitude_values:
+        return max(altitude_values)
+
+    return None
+
+
+def _get_activity_streams(client: Any, activity_id: int) -> Any:
+    get_streams = getattr(client, "get_activity_streams", None)
+    if get_streams is None:
+        return None
+
+    for kwargs in (
+        {"types": ["altitude", "latlng"], "key_by_type": True},
+        {"types": ["altitude", "latlng"]},
+        {"types": ["altitude"]},
+    ):
+        try:
+            return get_streams(int(activity_id), **kwargs)
+        except TypeError:
+            continue
+        except Exception:
+            return None
+
+    return None
+
+
+def _extract_stream_values(stream_payload: Any, stream_name: str) -> list[float]:
+    if stream_payload is None:
+        return []
+
+    values: Any = None
+    if isinstance(stream_payload, dict):
+        candidate = stream_payload.get(stream_name)
+        values = getattr(candidate, "data", candidate)
+    elif isinstance(stream_payload, list):
+        for stream_item in stream_payload:
+            stream_type = _coerce_text(
+                getattr(stream_item, "type", None)
+                or getattr(stream_item, "name", None)
+            )
+            if stream_type == stream_name:
+                values = getattr(stream_item, "data", stream_item)
+                break
+    else:
+        candidate = getattr(stream_payload, stream_name, None)
+        values = getattr(candidate, "data", candidate)
+
+    if not isinstance(values, (list, tuple)):
+        return []
+
+    extracted_values = [_coerce_float(value) for value in values]
+    return [value for value in extracted_values if value is not None]
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+
+    candidate = getattr(value, "num", value)
+    try:
+        return float(candidate)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_decimal(value: Any) -> Decimal | None:
+    numeric_value = _coerce_float(value)
+    if numeric_value is None:
+        return None
+    return Decimal(f"{numeric_value:.2f}")
+
+
+def _coerce_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    candidate = str(value).strip()
+    return candidate or None
