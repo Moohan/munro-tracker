@@ -7,7 +7,7 @@ import 'leaflet/dist/leaflet.css';
 const OSM_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 const TOPO_URL = 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png'; // Backup for "OS Map" look
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
-const USER_ID = import.meta.env.VITE_USER_ID || '00000000-0000-0000-0000-000000000001';
+const USER_ID = import.meta.env.VITE_USER_ID || undefined;
 
 // --- Icons (Memoized Singletons) ---
 const baggedPeakIcon = L.divIcon({
@@ -84,7 +84,12 @@ const App: React.FC = () => {
     const fetchMunros = async () => {
       try {
         setLoading(true);
-        const response = await fetch(`${API_BASE_URL}/munros?user_id=${USER_ID}&limit=300`);
+        const url = new URL(`${API_BASE_URL}/munros`, window.location.origin);
+        if (USER_ID) {
+          url.searchParams.append('user_id', USER_ID);
+        }
+        url.searchParams.append('limit', '300');
+        const response = await fetch(url.toString());
         if (!response.ok) throw new Error('Failed to fetch Munros');
         const data = await response.json();
         setMunros(data);
@@ -148,12 +153,12 @@ const App: React.FC = () => {
       )}
 
       {/* Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-[1002] w-80 transform bg-white p-6 shadow-2xl transition-transform duration-300 ease-in-out lg:static lg:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+      <aside id="sidebar" className={`fixed inset-y-0 left-0 z-[1002] w-80 transform bg-white p-6 shadow-2xl transition-transform duration-300 ease-in-out lg:static lg:translate-x-0 ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className="flex flex-col h-full">
           <div className="mb-8">
             <div className="flex items-center justify-between mb-4">
               <h1 className="text-2xl font-black tracking-tight text-emerald-900">MunroStream</h1>
-              <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-slate-600">
+              <button onClick={() => setIsSidebarOpen(false)} className="lg:hidden text-slate-400 hover:text-slate-600" aria-label="Close sidebar">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
               </button>
             </div>
@@ -222,7 +227,7 @@ const App: React.FC = () => {
 
       {/* Main Content */}
       <main className="relative flex-1">
-        <button onClick={() => setIsSidebarOpen(true)} className="absolute left-4 top-4 z-[1000] rounded-2xl bg-white p-3 shadow-xl lg:hidden hover:bg-slate-50">
+        <button onClick={() => setIsSidebarOpen(true)} className="absolute left-4 top-4 z-[1000] rounded-2xl bg-white p-3 shadow-xl lg:hidden hover:bg-slate-50" aria-label="Open menu" aria-expanded={isSidebarOpen} aria-controls="sidebar">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
         </button>
 
