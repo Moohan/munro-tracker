@@ -9,14 +9,15 @@ from app.services.strava import (
     exchange_code_for_token,
     extract_activity_polyline,
     get_strava_oauth_status,
+    get_strava_oauth_runtime_config,
     get_strava_redirect_uri,
     get_strava_webhook_verify_token,
     parse_oauth_state,
     parse_scope_string,
+    save_strava_oauth_settings,
     upsert_user_from_auth,
     validate_frontend_redirect_url,
 )
-
 __all__ = [
     "REQUESTED_STRAVA_SCOPES",
     "REQUIRED_STRAVA_SCOPES",
@@ -28,10 +29,12 @@ __all__ = [
     "exchange_code_for_token",
     "extract_activity_polyline",
     "get_strava_oauth_status",
+    "get_strava_oauth_runtime_config",
     "get_strava_redirect_uri",
     "get_strava_webhook_verify_token",
     "parse_oauth_state",
     "parse_scope_string",
+    "save_strava_oauth_settings",
     "upsert_user_from_auth",
     "validate_frontend_redirect_url",
 ]

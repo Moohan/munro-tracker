@@ -17,7 +17,12 @@ class User(Base):
     refresh_token: Mapped[str] = mapped_column(Text, nullable=False)
     access_token: Mapped[str | None] = mapped_column(Text)
     token_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    strava_activity_total_count: Mapped[int | None] = mapped_column(BigInteger)
+    strava_activity_total_refreshed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
+    user_bag_activities = relationship("UserBagActivity", back_populates="user")
     user_bags = relationship("UserBag", back_populates="user")
     strava_activities = relationship("StravaActivity", back_populates="user")
     strava_webhook_events = relationship("StravaWebhookEvent", back_populates="user")

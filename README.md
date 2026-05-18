@@ -48,6 +48,8 @@ Frontend:
 
 `STRAVA_WEBHOOK_VERIFY_TOKEN` is the canonical verification token. `STRAVA_WEBHOOK_SECRET` is still accepted as a fallback so older local setups do not break immediately.
 
+If you leave `STRAVA_CLIENT_ID` and `STRAVA_CLIENT_SECRET` unset locally, you can now save them from the dashboard instead. The dashboard-stored values are used immediately for Strava OAuth without restarting the stack.
+
 ## Local commands
 
 Backend:

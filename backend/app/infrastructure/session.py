@@ -13,6 +13,10 @@ def _get_engine():
     return create_engine(settings.database_url, pool_pre_ping=True)
 
 
+def get_engine():
+    return _get_engine()
+
+
 @lru_cache
 def _get_sessionmaker():
     engine = _get_engine()

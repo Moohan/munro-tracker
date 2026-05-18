@@ -8,6 +8,9 @@ class DashboardResponse(BaseModel):
     total_munros: int
     bagged_munros: int
     completion_percentage: Decimal
+    cached_strava_activities: int
+    total_strava_activities: int | None = None
+    total_strava_activities_updated_at: datetime | None = None
     total_ascent_metres: Decimal
     last_bagged_at: datetime | None = None
 

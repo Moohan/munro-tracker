@@ -1,6 +1,13 @@
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     strava_athlete_id BIGINT NOT NULL UNIQUE,
@@ -9,6 +16,8 @@ CREATE TABLE IF NOT EXISTS users (
     refresh_token TEXT NOT NULL,
     access_token TEXT,
     token_expires_at TIMESTAMPTZ NOT NULL,
+    strava_activity_total_count BIGINT,
+    strava_activity_total_refreshed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT chk_user_token_safety
@@ -50,6 +59,24 @@ CREATE TABLE IF NOT EXISTS user_bags (
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_bags_bagged_at ON user_bags (bagged_at DESC);
+
+CREATE TABLE IF NOT EXISTS user_bag_activities (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    munro_id BIGINT NOT NULL REFERENCES munros(id) ON DELETE CASCADE,
+    source_activity_id BIGINT NOT NULL,
+    bagged_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    matched_distance_metres NUMERIC(6, 2) CHECK (
+        matched_distance_metres IS NULL
+        OR (matched_distance_metres >= 0 AND matched_distance_metres <= 100.00)
+    ),
+    summit_elevation_metres NUMERIC(7, 2),
+    source TEXT NOT NULL DEFAULT 'strava',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, munro_id, source_activity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_bag_activities_munro_history
+    ON user_bag_activities (user_id, munro_id, bagged_at DESC);
 
 CREATE TABLE IF NOT EXISTS strava_activities (
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -96,8 +123,14 @@ COMMENT ON COLUMN munros.geom IS
 COMMENT ON TABLE user_bags IS
     'Join table recording when a user has bagged a Munro, including spatial evidence from Strava activity processing.';
 
+COMMENT ON TABLE user_bag_activities IS
+    'Per-activity Munro bagging evidence, used to count repeat bags and link matching Strava activities.';
+
 COMMENT ON TABLE strava_activities IS
     'Persisted Strava activity metadata and worker processing outcomes used for dashboard statistics and bagging evidence.';
 
 COMMENT ON TABLE strava_webhook_events IS
     'Idempotent log of Strava webhook deliveries, used to avoid duplicate activity processing.';
+
+COMMENT ON TABLE app_settings IS
+    'Local runtime configuration overrides, including dashboard-managed Strava app credentials.';

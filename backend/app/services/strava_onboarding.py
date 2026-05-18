@@ -10,7 +10,7 @@ from app.services.strava import (
     parse_scope_string,
     upsert_user_from_auth,
 )
-from app.tasks.strava import sync_latest_activities_for_user
+from app.services.strava_queue import enqueue_latest_activities_sync
 
 
 def onboard_user_from_strava_callback(
@@ -19,11 +19,11 @@ def onboard_user_from_strava_callback(
     state: str,
     scope: str,
 ) -> dict[str, Any]:
-    state_payload = parse_oauth_state(state)
+    state_payload = parse_oauth_state(state, db)
     accepted_scopes = sorted(parse_scope_string(scope))
     ensure_required_scopes(accepted_scopes)
 
-    token_bundle = exchange_code_for_token(code)
+    token_bundle = exchange_code_for_token(code, db)
     user = upsert_user_from_auth(db, token_bundle)
     db.commit()
     db.refresh(user)
@@ -33,7 +33,7 @@ def onboard_user_from_strava_callback(
     try:
         from celery.exceptions import CeleryError
 
-        task_result = sync_latest_activities_for_user.delay(str(user.id))
+        task_result = enqueue_latest_activities_sync(user.id)
         sync_task_id = task_result.id
         sync_enqueued = True
     except CeleryError:

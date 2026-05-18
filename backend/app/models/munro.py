@@ -26,4 +26,5 @@ class Munro(Base):
     area: Mapped[str | None] = mapped_column(Text)
     geom = mapped_column(Geometry("POINT", srid=4326), nullable=False)
 
+    user_bag_activities = relationship("UserBagActivity", back_populates="munro")
     user_bags = relationship("UserBag", back_populates="munro")
